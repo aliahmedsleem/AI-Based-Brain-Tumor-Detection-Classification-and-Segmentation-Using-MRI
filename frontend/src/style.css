@@ -95,3 +95,12 @@ button:focus-visible,input:focus-visible{outline:3px solid #19b5a5;outline-offse
 .volume-selector{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:18px;color:#42556b;font-size:13px;font-weight:650}
 .volume-selector input{width:90px;border:1px solid #cbd8e3;border-radius:8px;padding:10px;font:inherit;color:#172a41}
 .volume-notice{padding:12px;background:#fff8e8;border:1px solid #ebd49d;border-radius:8px;color:#80601c!important}
+
+/* v0.8 research preprocessing */
+.preprocess-panel{background:#fff;border:1px solid #d6e8e5;border-radius:12px;padding:18px;margin-top:18px}
+.preprocess-panel h3{margin:0 0 8px;font-size:16px}
+.preprocess-panel .secondary{margin-top:12px}
+.preprocess-panel .secondary:disabled{opacity:.55;cursor:wait}
+.preprocess-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:15px}
+.preprocess-stats p{background:#f3f8fa;border-radius:8px;padding:10px;margin:0;font-size:12px;overflow-wrap:anywhere}
+@media(max-width:650px){.preprocess-stats{grid-template-columns:1fr}}
