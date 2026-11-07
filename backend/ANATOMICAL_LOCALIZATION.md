@@ -35,10 +35,10 @@ Outputs:
 - `registered_atlas.nii.gz`: nearest-neighbor labels on the subject MRI grid
 - `registered_template.nii.gz`: transformed template intensity volume
 - `template_to_subject.tfm`: registration transform
-- `registration_qc_axial.png`: **one preliminary QA view only**
+- `registration_qc_axial.png`, `registration_qc_coronal.png`, `registration_qc_sagittal.png`: three orthogonal preliminary QA mosaics (subject, registered template, atlas overlay)
 - `registration_report.json`: method, metric, warnings
 
-**Important:** This is a **rigid registration baseline**, not a clinically
+**Important:** Inspect all three QA mosaics and the full 3D volumes. These snapshots alone cannot certify registration. This is a **rigid registration baseline**, not a clinically
 validated deformable pipeline. A low registration metric is not evidence of
 correct lobe alignment. Examine overlays in **all three planes** with 3D
 Slicer and check label-to-lobe definitions, laterality, and tumor mass effect.
@@ -100,3 +100,16 @@ This atlas is based on healthy anatomical reference data. Brain tumors
 can cause displacement, deformation and edema; rigid registration may be
 insufficient. The generated mapping is intentionally incomplete and cannot
 be used as an anatomical ground truth or clinical localization without QA.
+
+## Verify installation and mapping tests
+
+From `backend` run:
+
+```powershell
+C:\NeuroScopeAI\train-env\Scripts\python.exe -m unittest discover -s tests -p "test_*atlas*.py" -v
+C:\NeuroScopeAI\train-env\Scripts\python.exe -m unittest tests.test_anatomical_localization -v
+```
+
+The scripts create no atlas automatically. To finish end-to-end localization,
+obtain a licensed template and corresponding atlas NIfTI and XML files.
+Use a **new output folder for each registration** to preserve QA evidence.
