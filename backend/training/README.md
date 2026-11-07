@@ -34,3 +34,7 @@ For a quick CPU smoke test, use `--epochs 1 --device cpu --roi-size 64` on a sma
 - This baseline assumes image/label voxel alignment and does not resample or check affine equivalence beyond a strict equality check; preprocess/resample in a separate validated pipeline if necessary.
 - The test partition is reserved and never used by the trainer.
 - Dice on the validation partition is for development only; it is not clinical accuracy.
+
+
+## Windows installation troubleshooting
+If pip reports a missing header under `torch/include/ATen/...`, Windows path length is a likely cause. Keep the training environment at a short path (for example `C:\\NeuroScopeAI\\train-env`) rather than under the deeply nested repository. The API environment can remain unchanged. If torch imports but reports missing DLLs, install/update the Microsoft Visual C++ x64 Redistributable and reinstall torch in the clean environment. Always verify `torch.cuda.is_available()` before selecting `--device cuda`.
