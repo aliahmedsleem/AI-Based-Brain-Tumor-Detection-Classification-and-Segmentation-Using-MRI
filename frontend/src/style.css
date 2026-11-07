@@ -51,3 +51,10 @@ footer{color:#98a9b8;font-size:12px;margin-top:45px}
 @media(max-width:700px){.shell{display:block}.sidebar{width:100%;padding:13px}.brand{padding:5px 8px 15px}nav{display:flex;overflow-x:auto}nav button{white-space:nowrap;font-size:12px;padding:10px}.sidebar-bottom{display:none}main{padding:24px 16px}h1{font-size:27px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.metric{padding:14px}.metric strong{font-size:26px}.panel{padding:19px}}
 @media(max-width:380px){.metrics{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:no-preference){button{transition:background .15s ease}}
+
+.mri-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:20px}
+.mri-plane{margin:0;background:#101827;border-radius:12px;overflow:hidden;color:#d9e9f4}
+.mri-plane figcaption{font-size:11px;letter-spacing:1px;padding:12px 14px;border-bottom:1px solid #2a3748}
+.mri-plane img{width:100%;aspect-ratio:1;object-fit:contain;display:block;background:#090e16}
+.preview-note{font-size:12px}
+@media(max-width:850px){.mri-grid{grid-template-columns:1fr}}
