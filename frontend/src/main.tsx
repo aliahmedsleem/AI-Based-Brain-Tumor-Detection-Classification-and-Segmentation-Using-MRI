@@ -66,6 +66,7 @@ function App() {
   const [segmentBusy, setSegmentBusy] = useState(false)
   const [segmentation, setSegmentation] = useState<{segmented_voxels:number; estimated_mask_volume_ml:number; notice:string} | null>(null)
   const [confirmFlair, setConfirmFlair] = useState(false)
+  const [showOverlay, setShowOverlay] = useState(true)
   const [views, setViews] = useState<Record<Plane, View>>({ sagittal: defaultView(), coronal: defaultView(), axial: defaultView() })
   const drag = useRef<{ plane: Plane; x: number; y: number } | null>(null)
   function updateView(plane: Plane, patch: Partial<View>) {
@@ -79,6 +80,7 @@ function App() {
     setError('')
     setResult(null)
     setSegmentation(null)
+    setShowOverlay(true)
     setViews({ sagittal: defaultView(), coronal: defaultView(), axial: defaultView() })
     const data = new FormData()
     data.append('file', file)
@@ -97,7 +99,7 @@ function App() {
     }
   }
 
-  async function changeSlice(plane: Plane, index: number) {
+  async function changeSlice(plane: Plane, index: number, overlay = showOverlay) {
     if (!result) return
     const studyId = result.study_id
     sliceRequests.current[plane]?.abort()
@@ -106,7 +108,7 @@ function App() {
     setError('')
     setResult(previous => previous ? { ...previous, slice_indices: { ...previous.slice_indices, [plane]: index } } : null)
     try {
-      const url = `/api/studies/${encodeURIComponent(studyId)}/slice/${plane}?index=${index}`
+      const url = `/api/studies/${encodeURIComponent(studyId)}/slice/${plane}?index=${index}&overlay=${overlay}`
       const response = await fetch(url, { signal: controller.signal })
       const body = await parseApiResponse(response, 'Unable to render MRI slice')
       if (controller.signal.aborted) return
@@ -134,6 +136,45 @@ function App() {
     }
   }
 
+  async function toggleOverlay(next: boolean) {
+    if (!result || !segmentation) return
+    setShowOverlay(next)
+    const studyId = result.study_id
+    Object.values(sliceRequests.current).forEach(controller => controller?.abort())
+    try {
+      const planes: Plane[] = ['axial', 'coronal', 'sagittal']
+      const images = await Promise.all(planes.map(async plane => {
+        const index = result.slice_indices[plane]
+        const response = await fetch(`/api/studies/${encodeURIComponent(studyId)}/slice/${plane}?index=${index}&overlay=${next}`)
+        const body = await parseApiResponse(response, 'Unable to update overlay')
+        return [plane, body.preview] as const
+      }))
+      setResult(previous => previous?.study_id === studyId ? {
+        ...previous, previews: { ...previous.previews, ...Object.fromEntries(images) }
+      } : previous)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to toggle overlay')
+    }
+  }
+
+  async function exportReport() {
+    if (!result || !segmentation) return
+    setError('')
+    try {
+      const response = await fetch(`/api/studies/${encodeURIComponent(result.study_id)}/ai/report`)
+      const body = await parseApiResponse(response, 'Unable to export research report')
+      const blob = new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'neuroscope_research_report.json'
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Report export failed')
+    }
+  }
+
   async function runSegmentation() {
     if (!result || !confirmFlair) return
     const studyId = result.study_id
@@ -146,6 +187,7 @@ function App() {
       setResult(previous => previous?.study_id === studyId
         ? { ...previous, previews: body.previews, slice_indices: body.slice_indices } : previous)
       setSegmentation(body)
+      setShowOverlay(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Research segmentation failed')
     } finally {
@@ -271,6 +313,8 @@ function App() {
                 <p><b>Segmented voxels:</b> {segmentation.segmented_voxels.toLocaleString()}</p>
                 <p><b>Threshold:</b> 0.90 · Largest connected component</p>
                 <p>{segmentation.notice}</p>
+                <label><input type="checkbox" checked={showOverlay} onChange={e => toggleOverlay(e.target.checked)} /> Show red segmentation overlay</label>
+                <div><button className="secondary" onClick={exportReport}>Export Research Report (JSON)</button></div>
               </div>}
             </div>
             <div className="preprocess-panel">
@@ -329,7 +373,7 @@ function App() {
           <p>This module is planned for the next development phase. No patient records or AI outputs are fabricated.</p>
           <button className="secondary" onClick={() => setPage('MRI Analysis')}>Go to MRI Analysis</button>
         </section>}
-      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.9</footer>
+      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.10</footer>
     </main>
   </div>
 }
