@@ -1,8 +1,8 @@
-import React, { useState } from 'react'
+import React, { useState, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   Activity, Brain, LayoutDashboard, Scan, FileText, Settings,
-  UploadCloud, ShieldCheck, Database, AlertCircle,
+  UploadCloud, ShieldCheck, Database, AlertCircle, ZoomIn, ZoomOut, RotateCcw,
 } from 'lucide-react'
 import './style.css'
 
@@ -15,6 +15,10 @@ type StudyMetadata = {
   previews: Record<'sagittal' | 'coronal' | 'axial', string>
   slice_indices: Record<'sagittal' | 'coronal' | 'axial', number>
 }
+
+type Plane = 'sagittal' | 'coronal' | 'axial'
+type View = { zoom: number; x: number; y: number; brightness: number; contrast: number }
+const defaultView = (): View => ({ zoom: 1, x: 0, y: 0, brightness: 100, contrast: 100 })
 
 const items = [
   { name: 'Dashboard', icon: LayoutDashboard },
@@ -48,12 +52,18 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [sliceBusy, setSliceBusy] = useState(false)
   const [error, setError] = useState('')
+  const [views, setViews] = useState<Record<Plane, View>>({ sagittal: defaultView(), coronal: defaultView(), axial: defaultView() })
+  const drag = useRef<{ plane: Plane; x: number; y: number } | null>(null)
+  function updateView(plane: Plane, patch: Partial<View>) {
+    setViews(previous => ({ ...previous, [plane]: { ...previous[plane], ...patch } }))
+  }
 
   async function inspect() {
     if (!file) return
     setBusy(true)
     setError('')
     setResult(null)
+    setViews({ sagittal: defaultView(), coronal: defaultView(), axial: defaultView() })
     const data = new FormData()
     data.append('file', file)
     try {
@@ -146,21 +156,48 @@ function App() {
             <p>AI analysis: Not available in this phase</p>
             <div className="mri-grid">{(['axial','coronal','sagittal'] as const).map(plane =>
               <figure key={plane} className="mri-plane"><figcaption>{plane.toUpperCase()} · slice {result.slice_indices[plane] + 1}</figcaption>
-                <img src={result.previews[plane]} alt={`${plane} MRI slice preview`} />
+                <div className="mri-viewport"
+                  onPointerDown={e => { if (e.button !== 0) return; e.currentTarget.setPointerCapture(e.pointerId); drag.current = { plane, x: e.clientX, y: e.clientY } }}
+                  onPointerMove={e => {
+                    if (!drag.current || drag.current.plane !== plane) return
+                    const { x, y } = drag.current
+                    drag.current = { plane, x: e.clientX, y: e.clientY }
+                    setViews(previous => ({ ...previous, [plane]: { ...previous[plane], x: previous[plane].x + e.clientX - x, y: previous[plane].y + e.clientY - y } }))
+                  }}
+                  onPointerUp={() => { drag.current = null }}
+                  onPointerCancel={() => { drag.current = null }}
+                  onWheel={e => { if (!e.ctrlKey) return; e.preventDefault(); updateView(plane, { zoom: Math.max(1, Math.min(5, views[plane].zoom + (e.deltaY < 0 ? .2 : -.2))) }) }}
+                  aria-label={`${plane} MRI image; drag to pan`}>
+                  <img draggable={false} src={result.previews[plane]} alt={`${plane} MRI slice preview`}
+                    style={{ transform: `translate(${views[plane].x}px, ${views[plane].y}px) scale(${views[plane].zoom})`,
+                      filter: `brightness(${views[plane].brightness}%) contrast(${views[plane].contrast}%)` }} />
+                </div>
+                <div className="viewer-tools">
+                  <button type="button" aria-label={`Zoom in ${plane}`} onClick={() => updateView(plane, { zoom: Math.min(5, views[plane].zoom + .25) })}><ZoomIn size={17} /></button>
+                  <span>{Math.round(views[plane].zoom * 100)}%</span>
+                  <button type="button" aria-label={`Zoom out ${plane}`} onClick={() => updateView(plane, { zoom: Math.max(1, views[plane].zoom - .25) })}><ZoomOut size={17} /></button>
+                  <button type="button" aria-label={`Reset ${plane} view`} onClick={() => updateView(plane, defaultView())}><RotateCcw size={17} /></button>
+                </div>
+                <div className="image-adjustments">
+                  <label>Brightness <span>{views[plane].brightness}%</span><input type="range" min="50" max="200" value={views[plane].brightness}
+                    onChange={e => updateView(plane, { brightness: Number(e.target.value) })} /></label>
+                  <label>Contrast <span>{views[plane].contrast}%</span><input type="range" min="50" max="200" value={views[plane].contrast}
+                    onChange={e => updateView(plane, { contrast: Number(e.target.value) })} /></label>
+                </div>
                 <label className="slice-control"><span>Slice {result.slice_indices[plane] + 1} / {result.shape[plane === 'sagittal' ? 0 : plane === 'coronal' ? 1 : 2]}</span>
                   <input type="range" min={0} max={result.shape[plane === 'sagittal' ? 0 : plane === 'coronal' ? 1 : 2] - 1}
                     value={result.slice_indices[plane]} disabled={sliceBusy}
                     onChange={e => changeSlice(plane, Number(e.target.value))} aria-label={`${plane} slice`} /></label>
               </figure>
             )}</div>
-            <p className="preview-note">Interactive slice navigation. Each change uploads the volume for stateless rendering; large files may respond slowly. No tumor segmentation or diagnostic inference.</p>
+            <p className="preview-note">Interactive slice navigation, zoom, drag-to-pan, brightness and contrast. Slice changes still upload the volume; large files may respond slowly. No tumor segmentation or diagnostic inference.</p>
           </div>}
         </section> :
         <section className="panel empty"><h2>{page}</h2>
           <p>This module is planned for the next development phase. No patient records or AI outputs are fabricated.</p>
           <button className="secondary" onClick={() => setPage('MRI Analysis')}>Go to MRI Analysis</button>
         </section>}
-      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.3</footer>
+      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.4</footer>
     </main>
   </div>
 }
