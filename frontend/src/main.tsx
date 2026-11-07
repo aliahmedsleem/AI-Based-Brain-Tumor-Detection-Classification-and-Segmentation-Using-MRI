@@ -63,6 +63,9 @@ function App() {
   const [reportData, setReportData] = useState<any>(null)
   const [reportBusy, setReportBusy] = useState(false)
   const [reportError, setReportError] = useState('')
+  const [referenceFile, setReferenceFile] = useState<File | null>(null)
+  const [referenceBusy, setReferenceBusy] = useState(false)
+  const [referenceResult, setReferenceResult] = useState<any>(null)
   const [volumeIndex, setVolumeIndex] = useState(0)
   const [sessionMessage, setSessionMessage] = useState('')
   const [preprocessSummary, setPreprocessSummary] = useState<{nonzero_voxels:number; normalized_mean:number; normalized_std:number; clipping_percentiles:number[]} | null>(null)
@@ -86,6 +89,8 @@ function App() {
     setResult(null)
     setSegmentation(null)
     setReportData(null)
+    setReferenceResult(null)
+    setReferenceFile(null)
     setShowOverlay(true)
     setViews({ sagittal: defaultView(), coronal: defaultView(), axial: defaultView() })
     const data = new FormData()
@@ -164,6 +169,24 @@ function App() {
     }
   }
 
+  async function compareReference() {
+    if (!result || !segmentation || !referenceFile) return
+    setReferenceBusy(true)
+    setReportError('')
+    const form = new FormData()
+    form.append('file', referenceFile)
+    try {
+      const response = await fetch(`/api/studies/${encodeURIComponent(result.study_id)}/ai/compare-reference`, {method: 'POST', body: form})
+      const body = await parseApiResponse(response, 'Ground truth comparison failed')
+      setReferenceResult(body)
+      setReportData(null)
+    } catch (err) {
+      setReportError(err instanceof Error ? err.message : 'Ground truth comparison failed')
+    } finally {
+      setReferenceBusy(false)
+    }
+  }
+
   async function loadResearchReport() {
     if (!result || !segmentation) return
     setReportBusy(true)
@@ -231,6 +254,7 @@ function App() {
         ? { ...previous, previews: body.previews, slice_indices: body.slice_indices } : previous)
       setSegmentation(body)
       setReportData(null)
+      setReferenceResult(null)
       setShowOverlay(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Research segmentation failed')
@@ -250,6 +274,8 @@ function App() {
       setPreprocessSummary(null)
       setSegmentation(null)
       setReportData(null)
+      setReferenceResult(null)
+      setReferenceFile(null)
       setFile(null)
       setStudyLabel('')
       setStudyNote('')
@@ -293,6 +319,15 @@ function App() {
             <button className="secondary" onClick={exportReport}>Download JSON</button>
             <button className="secondary" onClick={exportMask}>Download NIfTI Mask</button>
           </div>
+          <div className="preprocess-panel">
+            <h3>Ground Truth Verification (optional)</h3>
+            <p>Upload the corresponding BraTS *_seg.nii.gz for the same case. The system verifies shape and spatial affine before comparing whole-tumor masks.</p>
+            <input type="file" accept=".nii,.gz" onChange={e => setReferenceFile(e.target.files?.[0] || null)} />
+            <button className="secondary" disabled={!referenceFile || referenceBusy} onClick={compareReference}>
+              {referenceBusy ? 'Comparing…' : 'Compare with Ground Truth'}
+            </button>
+            {referenceResult && <p role="status">Dice: {referenceResult.metrics.dice.toFixed(4)} · Precision: {referenceResult.metrics.precision.toFixed(4)} · Recall: {referenceResult.metrics.recall.toFixed(4)}. Click Refresh Report to include these results.</p>}
+          </div>
           {reportError && <p className="error" role="alert">{reportError}</p>}
           {reportData && <article className="report-document">
             <div className="report-topline"><Brain size={30}/><div><strong>NeuroScope AI</strong><span>Experimental MRI Research Report</span></div></div>
@@ -313,6 +348,21 @@ function App() {
               <div><dt>Voxel spacing</dt><dd>{reportData.voxel_spacing_mm.join(' × ')} mm</dd></div>
               <div><dt>Postprocessing</dt><dd>{reportData.postprocessing.replaceAll('_', ' ')}</dd></div>
             </dl>
+            <h4>Predicted Region — Image-Space Measurements</h4>
+            <div className="report-stats">
+              <div><span>Bounding-box extent (image axes)</span><strong>{reportData.mask_geometry.bounding_box_extent_mm?.join(' × ') || 'Not available'} mm</strong></div>
+              <div><span>Centroid (voxel coordinates)</span><strong>{reportData.mask_geometry.centroid_voxel?.join(', ') || 'Not available'}</strong></div>
+              <div><span>World centroid (RAS, mm)</span><strong>{reportData.mask_geometry.centroid_world_ras_mm?.join(', ') || 'Not available'}</strong></div>
+            </div>
+            <p><b>Anatomical region:</b> Not determined. Requires atlas registration and specialist assessment.</p>
+            <p><b>Hemisphere:</b> {reportData.mask_geometry.hemisphere}</p>
+            <p className="report-footnote">Bounding-box extent is not a clinical maximum diameter. Scanner/world coordinates do not independently establish a brain lobe or laterality.</p>
+            <h4>Reference Mask Verification</h4>
+            {reportData.ground_truth_comparison ? <p>
+              Dice: {reportData.ground_truth_comparison.dice.toFixed(4)} · Precision: {reportData.ground_truth_comparison.precision.toFixed(4)} · Recall: {reportData.ground_truth_comparison.recall.toFixed(4)}
+            </p> : <p>Not performed. Upload a matching BraTS reference segmentation to calculate overlap metrics.</p>}
+            <h4>Specialist Review (not automated)</h4>
+            <p>For neuroradiologist / neuro-oncologist: confirm anatomical lobe and hemisphere, lesion morphology, involvement of critical structures, differential diagnosis, and whether additional MRI sequences or clinical information are required.</p>
             <h4>Selected MRI Views</h4>
             <div className="report-images">{(['axial','coronal','sagittal'] as const).map(plane =>
               <figure key={plane}><img src={result.previews[plane]} alt={`${plane} research MRI preview`}/><figcaption>{plane.toUpperCase()} · slice {result.slice_indices[plane] + 1}</figcaption></figure>
@@ -475,7 +525,7 @@ function App() {
           <p>This module is planned for the next development phase. No patient records or AI outputs are fabricated.</p>
           <button className="secondary" onClick={() => setPage('MRI Analysis')}>Go to MRI Analysis</button>
         </section>}
-      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.13</footer>
+      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.14</footer>
     </main>
   </div>
 }
