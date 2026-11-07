@@ -2,11 +2,15 @@ from pathlib import Path
 from io import BytesIO
 import base64
 import tempfile
+import secrets
+import time
+from threading import RLock
+from fastapi import Query
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="NeuroScope AI Research API", version="0.3.0")
+app = FastAPI(title="NeuroScope AI Research API", version="0.5.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -35,11 +39,32 @@ def preview_image(volume, axis, index, lower, upper):
     return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
+
+# Research prototype: one active volume in memory, no disk persistence.
+# Deploy only on trusted localhost; session IDs are not user authentication.
+CACHE_TTL_SECONDS = 600
+CACHE_MAX_BYTES = 256 * 1024 * 1024
+_cache = {}
+_cache_lock = RLock()
+
+
+def _get_session(study_id: str):
+    with _cache_lock:
+        now = time.monotonic()
+        for key, item in list(_cache.items()):
+            if now - item["last_access"] > CACHE_TTL_SECONDS:
+                del _cache[key]
+        item = _cache.get(study_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="MRI session expired. Inspect the file again.")
+        item["last_access"] = now
+        return item
+
+
 @app.post("/api/studies/inspect")
 async def inspect_study(file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith((".nii", ".nii.gz")):
         raise HTTPException(status_code=400, detail="Only .nii or .nii.gz supported")
-
     import nibabel as nib
     import numpy as np
 
@@ -55,65 +80,11 @@ async def inspect_study(file: UploadFile = File(...)):
                 output.write(chunk)
         try:
             image = nib.as_closest_canonical(nib.load(str(path), mmap=False, keep_file_open=False))
-            if len(image.shape) != 3:
-                raise ValueError("Only 3D MRI volumes supported")
-            if np.prod(image.shape) > 100_000_000:
-                raise ValueError("Volume exceeds safe preview size")
-            volume = image.get_fdata(dtype=np.float32, caching='unchanged')
-            image.uncache()
-            finite = volume[np.isfinite(volume)]
-            if finite.size == 0:
-                raise ValueError("No finite intensities")
-            lower, upper = np.percentile(finite, [1, 99])
-            if upper <= lower:
-                upper = lower + 1
-            volume = np.nan_to_num(volume, nan=float(lower), posinf=float(upper), neginf=float(lower))
-            indices = [int(n // 2) for n in image.shape]
-            previews = {
-                name: preview_image(volume, axis, indices[axis], lower, upper)
-                for axis, name in enumerate(["sagittal", "coronal", "axial"])
-            }
-            return {
-                "filename": file.filename,
-                "shape": list(image.shape),
-                "voxel_spacing_mm": list(map(float, image.header.get_zooms()[:3])),
-                "orientation": "".join(nib.aff2axcodes(image.affine)),
-                "previews": previews,
-                "slice_indices": dict(zip(["sagittal", "coronal", "axial"], indices)),
-                "status": "inspected",
-                "analysis_available": False,
-            }
-        except (ValueError, OSError, EOFError, nib.filebasedimages.ImageFileError) as exc:
-            raise HTTPException(status_code=422, detail="Invalid or unsupported 3D NIfTI volume") from exc
-
-
-@app.post("/api/studies/slices")
-async def get_study_slices(
-    file: UploadFile = File(...),
-    sagittal: int = 0,
-    coronal: int = 0,
-    axial: int = 0,
-):
-    """Render user-selected slices. This endpoint is stateless and does not store MRI data."""
-    if not file.filename or not file.filename.lower().endswith((".nii", ".nii.gz")):
-        raise HTTPException(status_code=400, detail="Only NIfTI files are supported")
-    import nibabel as nib
-    import numpy as np
-
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / ("study.nii.gz" if file.filename.lower().endswith(".nii.gz") else "study.nii")
-        size = 0
-        with path.open("wb") as output:
-            while chunk := await file.read(1024 * 1024):
-                size += len(chunk)
-                if size > 256 * 1024 * 1024:
-                    raise HTTPException(status_code=413, detail="File exceeds 256 MiB")
-                output.write(chunk)
-        try:
-            image = nib.as_closest_canonical(nib.load(str(path), mmap=False, keep_file_open=False))
             if len(image.shape) != 3 or np.prod(image.shape) > 100_000_000:
-                raise ValueError("Unsupported image shape")
-            volume = image.get_fdata(dtype=np.float32, caching='unchanged')
+                raise ValueError("Only 3D MRI volumes up to 100M voxels are supported")
+            if np.prod(image.shape) * 4 > CACHE_MAX_BYTES:
+                raise HTTPException(status_code=413, detail="Decoded MRI exceeds 256 MiB memory limit")
+            volume = image.get_fdata(dtype=np.float32, caching="unchanged")
             image.uncache()
             finite = volume[np.isfinite(volume)]
             if finite.size == 0:
@@ -121,15 +92,45 @@ async def get_study_slices(
             lower, upper = map(float, np.percentile(finite, [1, 99]))
             if upper <= lower:
                 upper = lower + 1
-            volume = np.nan_to_num(volume, nan=lower, posinf=upper, neginf=lower)
-            requested = {"sagittal": sagittal, "coronal": coronal, "axial": axial}
-            for axis, name in enumerate(requested):
-                if requested[name] < 0 or requested[name] >= image.shape[axis]:
-                    raise HTTPException(status_code=422, detail=f"{name} slice index out of range")
-            previews = {
-                name: preview_image(volume, axis, requested[name], lower, upper)
-                for axis, name in enumerate(requested)
+            volume = np.nan_to_num(volume, nan=lower, posinf=upper, neginf=lower, copy=False)
+            indices = {name: int(image.shape[axis] // 2) for axis, name in enumerate(("sagittal", "coronal", "axial"))}
+            previews = {name: preview_image(volume, axis, indices[name], lower, upper)
+                        for axis, name in enumerate(indices)}
+            study_id = secrets.token_urlsafe(32)
+            with _cache_lock:
+                _cache.clear()  # Single-study research workstation; bounded memory.
+                _cache[study_id] = {"volume": volume, "lower": lower, "upper": upper,
+                                    "last_access": time.monotonic()}
+            return {
+                "study_id": study_id,
+                "filename": file.filename,
+                "shape": list(image.shape),
+                "voxel_spacing_mm": list(map(float, image.header.get_zooms()[:3])),
+                "orientation": "".join(nib.aff2axcodes(image.affine)),
+                "previews": previews,
+                "slice_indices": indices,
+                "status": "inspected",
+                "analysis_available": False,
             }
-            return {"previews": previews, "slice_indices": requested, "analysis_available": False}
         except (ValueError, OSError, EOFError, nib.filebasedimages.ImageFileError) as exc:
-            raise HTTPException(status_code=422, detail="Invalid or unsupported NIfTI image") from exc
+            raise HTTPException(status_code=422, detail="Invalid or unsupported 3D NIfTI volume") from exc
+
+
+@app.get("/api/studies/{study_id}/slice/{plane}")
+def get_cached_slice(study_id: str, plane: str, index: int = Query(ge=0)):
+    axes = {"sagittal": 0, "coronal": 1, "axial": 2}
+    if plane not in axes:
+        raise HTTPException(status_code=400, detail="Unknown MRI plane")
+    item = _get_session(study_id)
+    axis = axes[plane]
+    if index >= item["volume"].shape[axis]:
+        raise HTTPException(status_code=422, detail="Slice index out of range")
+    return {"plane": plane, "index": index,
+            "preview": preview_image(item["volume"], axis, index, item["lower"], item["upper"])}
+
+
+@app.delete("/api/studies/{study_id}")
+def release_study(study_id: str):
+    with _cache_lock:
+        _cache.pop(study_id, None)
+    return {"released": True}
