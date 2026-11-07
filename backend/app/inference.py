@@ -55,17 +55,18 @@ def infer(volume):
     return mask.astype(np.uint8)
 
 
-def overlay_png(volume, mask, axis, index, lower, upper):
+def overlay_png(volume, mask, axis, index, lower, upper, opacity=0.55):
     import base64
     from io import BytesIO
     import numpy as np
     from PIL import Image
 
+    opacity = max(0.0, min(1.0, float(opacity)))
     gray = np.rot90(np.take(volume, index, axis=axis))
     marked = np.rot90(np.take(mask, index, axis=axis)).astype(bool)
     pixels = (np.clip((gray - lower) / max(upper - lower, 1e-6), 0, 1) * 255).astype(np.uint8)
     rgb = np.repeat(pixels[:, :, None], 3, axis=2)
-    rgb[marked] = (rgb[marked].astype(np.float32) * 0.45 + np.array([255, 65, 65]) * 0.55).astype(np.uint8)
+    rgb[marked] = (rgb[marked].astype(np.float32) * (1 - opacity) + np.array([255, 65, 65]) * opacity).astype(np.uint8)
     picture = Image.fromarray(rgb, mode="RGB")
     picture.thumbnail((512, 512))
     buf = BytesIO()
