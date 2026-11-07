@@ -5,13 +5,14 @@ No NIfTI data is uploaded, copied, or modified.
 """
 import argparse
 import json
+
 from collections import Counter
 from pathlib import Path
 
 MODALITIES = ("flair", "t1", "t1ce", "t2", "seg")
 
 
-def prepare(data_root: Path, out: Path, modality: str = "flair", strict: bool = False):
+def prepare(data_root: Path, out: Path, modality: str = "flair", strict: bool = False, verify_geometry: bool = False):
     if modality not in MODALITIES[:-1]:
         raise ValueError("modality must be flair, t1, t1ce, or t2")
     root = data_root.expanduser().resolve()
@@ -35,6 +36,18 @@ def prepare(data_root: Path, out: Path, modality: str = "flair", strict: bool = 
             else:
                 matches[suffix] = found[0]
                 counts[suffix] += 1
+        if not problems and verify_geometry:
+            try:
+                import nibabel as nib
+                import numpy as np
+                reference = nib.load(str(matches[modality]), mmap=False, keep_file_open=False)
+                label = nib.load(str(matches["seg"]), mmap=False, keep_file_open=False)
+                if len(reference.shape) != 3 or len(label.shape) != 3:
+                    problems.append("Image/seg must both be 3D")
+                elif reference.shape != label.shape or not np.allclose(reference.affine, label.affine, rtol=1e-4, atol=1e-3):
+                    problems.append("Image/seg geometry mismatch")
+            except Exception as exc:
+                problems.append(f"Unreadable NIfTI header: {type(exc).__name__}")
         if problems:
             rejected.append({"case": case.name, "issues": problems})
             continue
@@ -70,9 +83,10 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--modality", choices=MODALITIES[:-1], default="flair")
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--verify-geometry", action="store_true", help="Read NIfTI headers and compare image/seg shapes and affines")
     args = parser.parse_args()
     try:
-        report, audit = prepare(args.data_root, args.out, args.modality, args.strict)
+        report, audit = prepare(args.data_root, args.out, args.modality, args.strict, args.verify_geometry)
     except ValueError as exc:
         parser.error(str(exc))
     print(f"Cases: {report['cases_found']}; valid: {report['valid_cases']}; incomplete: {report['rejected_cases']}")
