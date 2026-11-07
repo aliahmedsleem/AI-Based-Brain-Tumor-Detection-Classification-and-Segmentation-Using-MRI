@@ -26,12 +26,17 @@ def train(args):
         raise RuntimeError("CUDA requested but unavailable")
 
     partitions = split_patients(load_manifest(args.manifest), args.seed)
+    if args.init_weights and args.init_weights.resolve().is_relative_to(args.out.resolve()):
+        raise ValueError("Initialize from a checkpoint outside --out to protect the source model")
+    if args.init_weights and not args.init_weights.is_file():
+        raise ValueError(f"Checkpoint not found: {args.init_weights}")
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "split.json").write_text(json.dumps(partitions, indent=2), encoding="utf-8")
     (args.out / "config.json").write_text(json.dumps({
         "seed": args.seed, "epochs": args.epochs, "roi_size": args.roi_size,
         "learning_rate": args.lr, "patches_per_case": args.patches_per_case, "task": "binary_whole_tumor",
         "model": "MONAI 3D UNet", "device": str(device),
+        "init_weights": str(args.init_weights.resolve()) if args.init_weights else None,
     }, indent=2), encoding="utf-8")
 
     def read_case(record):
@@ -76,6 +81,15 @@ def train(args):
     model = UNet(spatial_dims=3, in_channels=1, out_channels=1,
                  channels=(16, 32, 64, 128, 256), strides=(2, 2, 2, 2),
                  num_res_units=2).to(device)
+    if args.init_weights:
+        # Only load checkpoints created locally by this training project.
+        checkpoint = torch.load(args.init_weights, map_location="cpu", weights_only=True)
+        if checkpoint.get("task") != "binary_whole_tumor":
+            raise ValueError("Checkpoint task mismatch")
+        if int(checkpoint.get("roi_size", -1)) != args.roi_size:
+            raise ValueError("Checkpoint ROI size mismatch")
+        model.load_state_dict(checkpoint["state_dict"], strict=True)
+        print(f"Initialized model weights from {args.init_weights}; optimizer starts fresh.", flush=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     loss_fn = DiceCELoss(sigmoid=True, squared_pred=False)
     best_dice = -1.0
@@ -130,6 +144,7 @@ def main():
     parser.add_argument("--patches-per-case", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--init-weights", type=Path, help="Initialize weights from trusted local best_val.pt; optimizer restarts")
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     args = parser.parse_args()
     if args.epochs < 1 or args.patches_per_case < 1 or args.roi_size < 32 or args.roi_size % 16 or not 0 < args.lr < 1:
