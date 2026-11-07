@@ -59,34 +59,53 @@ def register(subject_path, template_path, labels_path, out_dir):
     sitk.WriteImage(atlas, str(out_dir / "registered_atlas.nii.gz"))
     sitk.WriteImage(aligned, str(out_dir / "registered_template.nii.gz"))
     sitk.WriteTransform(transform, str(out_dir / "template_to_subject.tfm"))
-    # Visual QC mosaic: subject, aligned template, transparent atlas boundaries.
+    # Generate independently inspectable orthogonal QA panels.
     fixed_arr = sitk.GetArrayFromImage(subject)
     moving_arr = sitk.GetArrayFromImage(aligned)
     atlas_arr = sitk.GetArrayFromImage(atlas)
-    z = fixed_arr.shape[0] // 2
-    def normalize(a):
-        nonzero = a[np.isfinite(a) & (a != 0)]
-        if not nonzero.size:
-            return np.zeros_like(a, dtype=np.uint8)
-        low, high = np.percentile(nonzero, [1, 99])
-        return (np.clip((a - low) / max(high - low, 1e-6), 0, 1) * 255).astype(np.uint8)
-    subject_slice = normalize(fixed_arr[z])
-    template_slice = normalize(moving_arr[z])
-    qc = np.stack([subject_slice] * 3, axis=-1)
-    boundaries = atlas_arr[z] != 0
-    qc[boundaries] = (qc[boundaries].astype(float) * 0.65 + np.array([255, 60, 60]) * 0.35).astype(np.uint8)
-    mosaic = np.concatenate([np.stack([subject_slice]*3, -1), np.stack([template_slice]*3, -1), qc], axis=1)
-    Image.fromarray(mosaic).save(out_dir / "registration_qc_axial.png")
+
+    def normalize(slice_2d):
+        finite = slice_2d[np.isfinite(slice_2d) & (slice_2d != 0)]
+        if not finite.size:
+            return np.zeros_like(slice_2d, dtype=np.uint8)
+        low, high = np.percentile(finite, [1, 99])
+        return (np.clip((slice_2d - low) / max(high - low, 1e-6), 0, 1) * 255).astype(np.uint8)
+
+    qc_images = {}
+    for plane, axis in (("axial", 0), ("coronal", 1), ("sagittal", 2)):
+        index = fixed_arr.shape[axis] // 2
+        fixed_slice = np.take(fixed_arr, index, axis=axis)
+        moving_slice = np.take(moving_arr, index, axis=axis)
+        labels_slice = np.take(atlas_arr, index, axis=axis)
+        fixed_gray = normalize(fixed_slice)
+        moving_gray = normalize(moving_slice)
+        overlay = np.stack([fixed_gray] * 3, axis=-1)
+        inside = labels_slice > 0
+        overlay[inside] = (
+            overlay[inside].astype(np.float32) * 0.65 +
+            np.array([255, 60, 60], dtype=np.float32) * 0.35
+        ).astype(np.uint8)
+        panels = [
+            np.stack([fixed_gray] * 3, axis=-1),
+            np.stack([moving_gray] * 3, axis=-1),
+            overlay,
+        ]
+        mosaic = np.concatenate(panels, axis=1)
+        filename = f"registration_qc_{plane}.png"
+        Image.fromarray(mosaic).save(out_dir / filename)
+        qc_images[plane] = {"file": filename, "index": int(index),
+                            "panels": ["subject", "registered_template", "atlas_overlay"]}
     report = {
         "status": "requires_visual_qa", "method": "multi-resolution rigid Euler3D mutual-information registration",
         "metric_value": float(registration.GetMetricValue()),
         "optimizer_stop_condition": registration.GetOptimizerStopConditionDescription(),
         "atlas_covered_voxels": int(np.count_nonzero(arr)),
         "qc_image": "registration_qc_axial.png",
+        "qc_images": qc_images,
         "output_atlas": "registered_atlas.nii.gz",
         "limitations": [
             "Rigid alignment cannot correct all individual anatomical variation or mass effect.",
-            "Registration metric and one QC slice do not prove anatomical accuracy.",
+            "Registration metric and orthogonal QC snapshots do not prove anatomical accuracy.",
             "A trained specialist must review all three planes and atlas labels before reporting a lobe.",
             "Use a modality-compatible template MRI and corresponding label atlas.",
         ],
