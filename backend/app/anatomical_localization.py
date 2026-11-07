@@ -11,7 +11,7 @@ LOBES = {"frontal", "parietal", "temporal", "occipital", "insula", "cerebellum"}
 def atlas_overlap(mask, atlas_labels, label_definitions, min_fraction=0.05):
     """Measure predicted-mask overlap with atlas regions; never infer from voxel position.
 
-    label_definitions: {integer_label: {"lobe": "...", "hemisphere": "Left|Right|Midline"}}
+    label_definitions: {integer_label: {"lobe": "...", "hemisphere": "Left|Right|Midline|Unknown"}}
     """
     mask = np.asarray(mask, dtype=bool)
     atlas = np.asarray(atlas_labels)
@@ -32,7 +32,7 @@ def atlas_overlap(mask, atlas_labels, label_definitions, min_fraction=0.05):
             continue
         lobe = details.get("lobe", "").lower()
         side = details.get("hemisphere", "")
-        if lobe not in LOBES or side not in ("Left", "Right", "Midline"):
+        if lobe not in LOBES or side not in ("Left", "Right", "Midline", "Unknown"):
             raise ValueError(f"Invalid atlas region definition: {code}")
         voxels = int(np.count_nonzero(mask & (atlas == code)))
         accounted += voxels
