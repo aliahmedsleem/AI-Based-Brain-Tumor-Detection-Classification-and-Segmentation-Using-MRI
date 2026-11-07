@@ -14,6 +14,7 @@ def train(args):
     from monai.networks.nets import UNet
     from monai.losses import DiceCELoss
     from monai.inferers import sliding_window_inference
+    import torch.nn.functional as F
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -40,8 +41,8 @@ def train(args):
             raise ValueError("Expected aligned 3D image and label for " + record["patient_id"])
         if not np.allclose(img.affine, seg.affine, rtol=1e-4, atol=1e-3):
             raise ValueError("Image/label affine mismatch for " + record["patient_id"])
-        image = img.get_fdata(dtype=np.float32)
-        labels = seg.get_fdata(dtype=np.float32)
+        image = img.get_fdata(dtype=np.float32, caching="unchanged")
+        labels = seg.get_fdata(dtype=np.float32, caching="unchanged")
         if not np.isfinite(image).all() or not np.isfinite(labels).all():
             raise ValueError("Non-finite image or label values")
         mask = image != 0
@@ -56,13 +57,19 @@ def train(args):
         return torch.from_numpy(image[None].copy()), torch.from_numpy((labels[None] > 0).astype(np.float32))
 
     def patch_pair(image, label):
-        import torch.nn.functional as F
         target = (args.roi_size,) * 3
         pads = []
         for actual in reversed(image.shape[1:]):
             pads.extend((0, max(0, args.roi_size - actual)))
         image, label = F.pad(image, pads), F.pad(label, pads)
-        starts = [random.randint(0, d - size) for d, size in zip(image.shape[1:], target)]
+        # Favor tumor-containing patches for highly imbalanced segmentation data.
+        positive = torch.nonzero(label[0] > 0, as_tuple=False)
+        if len(positive) and random.random() < 0.7:
+            center = positive[random.randrange(len(positive))].tolist()
+            starts = [max(0, min(d - size, int(c) - size // 2))
+                      for d, size, c in zip(image.shape[1:], target, center)]
+        else:
+            starts = [random.randint(0, d - size) for d, size in zip(image.shape[1:], target)]
         sl = tuple(slice(start, start + size) for start, size in zip(starts, target))
         return image[(slice(None),) + sl].unsqueeze(0), label[(slice(None),) + sl].unsqueeze(0)
 
