@@ -4,6 +4,7 @@ import base64
 import tempfile
 import secrets
 import time
+from fastapi.responses import Response
 from threading import RLock
 from fastapi import Query
 
@@ -110,7 +111,7 @@ async def inspect_study(file: UploadFile = File(...), volume_index: int = Query(
             with _cache_lock:
                 _cache.clear()  # Single-study research workstation; bounded memory.
                 _cache[study_id] = {"volume": volume, "lower": lower, "upper": upper,
-                                    "last_access": time.monotonic(), "mask": None, "spacing": list(map(float, __import__("numpy").linalg.norm(image.affine[:3, :3], axis=0)))}
+                                    "affine": image.affine.copy(), "last_access": time.monotonic(), "mask": None, "spacing": list(map(float, __import__("numpy").linalg.norm(image.affine[:3, :3], axis=0)))}
             return {
                 "study_id": study_id,
                 "filename": file.filename,
@@ -131,7 +132,7 @@ async def inspect_study(file: UploadFile = File(...), volume_index: int = Query(
 
 
 @app.get("/api/studies/{study_id}/slice/{plane}")
-def get_cached_slice(study_id: str, plane: str, index: int = Query(ge=0), overlay: bool = Query(default=True)):
+def get_cached_slice(study_id: str, plane: str, index: int = Query(ge=0), overlay: bool = Query(default=True), opacity: float = Query(default=0.55, ge=0, le=1)):
     axes = {"sagittal": 0, "coronal": 1, "axial": 2}
     if plane not in axes:
         raise HTTPException(status_code=400, detail="Unknown MRI plane")
@@ -140,7 +141,7 @@ def get_cached_slice(study_id: str, plane: str, index: int = Query(ge=0), overla
     if index >= item["volume"].shape[axis]:
         raise HTTPException(status_code=422, detail="Slice index out of range")
     from app.inference import overlay_png
-    render = overlay_png(item["volume"], item["mask"], axis, index, item["lower"], item["upper"]) if overlay and item.get("mask") is not None else preview_image(item["volume"], axis, index, item["lower"], item["upper"])
+    render = overlay_png(item["volume"], item["mask"], axis, index, item["lower"], item["upper"], opacity=opacity) if overlay and item.get("mask") is not None else preview_image(item["volume"], axis, index, item["lower"], item["upper"])
     return {"plane": plane, "index": index, "preview": render, "segmentation_overlay": overlay and item.get("mask") is not None}
 
 
@@ -203,7 +204,10 @@ def segment_study(study_id: str, modality: str = Query(default="flair")):
             raise HTTPException(status_code=404, detail="Study session expired")
         item["mask"] = mask
     volume_mm3 = float(mask.sum()) * float(__import__("numpy").prod(item["spacing"]))
-    indices = {name: int(item["volume"].shape[axis] // 2) for axis, name in enumerate(("sagittal", "coronal", "axial"))}
+    import numpy as np
+    coords = np.argwhere(mask)
+    center = np.rint(coords.mean(axis=0)).astype(int) if coords.size else np.array(item["volume"].shape) // 2
+    indices = {name: int(center[axis]) for axis, name in enumerate(("sagittal", "coronal", "axial"))}
     previews = {name: overlay_png(item["volume"], mask, axis, indices[name], item["lower"], item["upper"])
                 for axis, name in enumerate(indices)}
     return {"study_id": study_id, "task": "binary_whole_tumor", "modality": "FLAIR",
@@ -238,3 +242,24 @@ def segmentation_report(study_id: str):
             "Held-out test evaluation used eight cases from the BraTS2021 dataset.",
         ],
     }
+
+
+@app.get("/api/studies/{study_id}/ai/mask.nii.gz")
+def export_mask_nifti(study_id: str):
+    """Export binary mask with canonical voxel-to-world affine from uploaded MRI."""
+    import numpy as np
+    import nibabel as nib
+    item = _get_session(study_id)
+    mask = item.get("mask")
+    if mask is None:
+        raise HTTPException(status_code=409, detail="Run segmentation before exporting a mask")
+    if mask.shape != item["volume"].shape:
+        raise HTTPException(status_code=500, detail="Mask and MRI geometry mismatch")
+    image = nib.Nifti1Image(np.asarray(mask, dtype=np.uint8), item["affine"])
+    image.header.set_data_dtype(np.uint8)
+    binary = image.to_bytes()
+    import gzip
+    payload = gzip.compress(binary, compresslevel=6, mtime=0)
+    return Response(content=payload, media_type="application/gzip",
+                    headers={"Content-Disposition": 'attachment; filename="neuroscope_whole_tumor_mask.nii.gz"',
+                             "Cache-Control": "no-store"})
