@@ -10,18 +10,20 @@ from fastapi import Query
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="NeuroScope AI Research API", version="0.8.0")
+app = FastAPI(title="NeuroScope AI Research API", version="0.9.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "mode": "research", "model_loaded": False}
+    from app.inference import configured_checkpoint
+    path = configured_checkpoint()
+    return {"status": "ok", "mode": "research", "model_configured": bool(path and path.is_file())}
 
 
 def preview_image(volume, axis, index, lower, upper):
@@ -108,7 +110,7 @@ async def inspect_study(file: UploadFile = File(...), volume_index: int = Query(
             with _cache_lock:
                 _cache.clear()  # Single-study research workstation; bounded memory.
                 _cache[study_id] = {"volume": volume, "lower": lower, "upper": upper,
-                                    "last_access": time.monotonic()}
+                                    "last_access": time.monotonic(), "mask": None, "spacing": list(map(float, image.header.get_zooms()[:3]))}
             return {
                 "study_id": study_id,
                 "filename": file.filename,
@@ -137,8 +139,9 @@ def get_cached_slice(study_id: str, plane: str, index: int = Query(ge=0)):
     axis = axes[plane]
     if index >= item["volume"].shape[axis]:
         raise HTTPException(status_code=422, detail="Slice index out of range")
-    return {"plane": plane, "index": index,
-            "preview": preview_image(item["volume"], axis, index, item["lower"], item["upper"])}
+    from app.inference import overlay_png
+    render = overlay_png(item["volume"], item["mask"], axis, index, item["lower"], item["upper"]) if item.get("mask") is not None else preview_image(item["volume"], axis, index, item["lower"], item["upper"])
+    return {"plane": plane, "index": index, "preview": render, "segmentation_overlay": item.get("mask") is not None}
 
 
 @app.delete("/api/studies/{study_id}")
@@ -154,7 +157,7 @@ def study_session_status(study_id: str):
     item = _get_session(study_id)
     return {"study_id": study_id, "shape": list(item["volume"].shape),
             "expires_after_inactive_seconds": CACHE_TTL_SECONDS,
-            "analysis_available": False}
+            "analysis_available": item.get("mask") is not None}
 
 
 @app.get("/api/ai/readiness")
@@ -182,3 +185,29 @@ def preprocessing_summary(study_id: str):
         "research_only": True,
         "model_loaded": False,
     }
+
+
+@app.post("/api/studies/{study_id}/ai/segment")
+def segment_study(study_id: str, modality: str = Query(default="flair")):
+    """Opt-in experimental whole-tumor inference. Only use actual FLAIR input."""
+    if modality.lower() != "flair":
+        raise HTTPException(status_code=422, detail="This model supports FLAIR only")
+    item = _get_session(study_id)
+    from app.inference import infer, overlay_png
+    try:
+        mask = infer(item["volume"])
+    except (RuntimeError, ValueError, ImportError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    with _cache_lock:
+        if _cache.get(study_id) is not item:
+            raise HTTPException(status_code=404, detail="Study session expired")
+        item["mask"] = mask
+    volume_mm3 = float(mask.sum()) * float(__import__("numpy").prod(item["spacing"]))
+    indices = {name: int(item["volume"].shape[axis] // 2) for axis, name in enumerate(("sagittal", "coronal", "axial"))}
+    previews = {name: overlay_png(item["volume"], mask, axis, indices[name], item["lower"], item["upper"])
+                for axis, name in enumerate(indices)}
+    return {"study_id": study_id, "task": "binary_whole_tumor", "modality": "FLAIR",
+            "threshold": 0.90, "postprocessing": "largest_3d_component",
+            "segmented_voxels": int(mask.sum()), "estimated_mask_volume_ml": round(volume_mm3 / 1000, 3),
+            "previews": previews, "slice_indices": indices,
+            "research_only": True, "notice": "Experimental segmentation, not a diagnosis. Only use FLAIR MRI."}
