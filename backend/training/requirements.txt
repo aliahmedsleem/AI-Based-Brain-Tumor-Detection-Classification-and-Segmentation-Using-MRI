@@ -1,0 +1,6 @@
+# Optional research training dependencies. Install separately from backend/requirements.txt.
+# Choose a PyTorch build matching your CUDA driver from pytorch.org before installing.
+monai>=1.4,<2
+torch>=2.4,<3
+nibabel>=5.2,<6
+numpy>=1.26,<3
