@@ -30,7 +30,7 @@ def train(args):
     (args.out / "split.json").write_text(json.dumps(partitions, indent=2), encoding="utf-8")
     (args.out / "config.json").write_text(json.dumps({
         "seed": args.seed, "epochs": args.epochs, "roi_size": args.roi_size,
-        "learning_rate": args.lr, "task": "binary_whole_tumor",
+        "learning_rate": args.lr, "patches_per_case": args.patches_per_case, "task": "binary_whole_tumor",
         "model": "MONAI 3D UNet", "device": str(device),
     }, indent=2), encoding="utf-8")
 
@@ -79,20 +79,22 @@ def train(args):
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     loss_fn = DiceCELoss(sigmoid=True, squared_pred=False)
     best_dice = -1.0
+    history = []
 
     for epoch in range(args.epochs):
         model.train()
         train_losses = []
         for record in partitions["train"]:
             x, y = read_case(record)
-            x, y = patch_pair(x, y)
-            x, y = x.to(device), y.to(device)
-            optimizer.zero_grad(set_to_none=True)
-            logits = model(x)
-            loss = loss_fn(logits, y)
-            loss.backward()
-            optimizer.step()
-            train_losses.append(float(loss.item()))
+            for _ in range(args.patches_per_case):
+                px, py = patch_pair(x, y)
+                px, py = px.to(device), py.to(device)
+                optimizer.zero_grad(set_to_none=True)
+                logits = model(px)
+                loss = loss_fn(logits, py)
+                loss.backward()
+                optimizer.step()
+                train_losses.append(float(loss.item()))
 
         model.eval()
         dice_scores = []
@@ -109,6 +111,8 @@ def train(args):
                 dice_scores.append((2 * intersection + 1e-6) / (denominator + 1e-6))
         score = float(np.mean(dice_scores))
         print(f"epoch={epoch+1}/{args.epochs} train_loss={np.mean(train_losses):.4f} val_dice={score:.4f}", flush=True)
+        history.append({"epoch": epoch + 1, "train_loss": float(np.mean(train_losses)), "val_dice": score})
+        (args.out / "history.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
         if score > best_dice:
             best_dice = score
             torch.save({"state_dict": model.state_dict(), "epoch": epoch + 1,
@@ -123,11 +127,12 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--roi-size", type=int, default=96)
+    parser.add_argument("--patches-per-case", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     args = parser.parse_args()
-    if args.epochs < 1 or args.roi_size < 32 or args.roi_size % 16 or not 0 < args.lr < 1:
+    if args.epochs < 1 or args.patches_per_case < 1 or args.roi_size < 32 or args.roi_size % 16 or not 0 < args.lr < 1:
         parser.error("epochs>=1, roi-size>=32 divisible by 16, and 0<lr<1 required")
     train(args)
 
