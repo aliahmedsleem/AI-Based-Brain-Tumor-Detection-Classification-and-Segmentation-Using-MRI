@@ -66,3 +66,37 @@ If QA fails, **do not use the atlas localization**.
 **No clinical diagnosis:** MRI segmentation, lobe overlap and bounding-box
 extent must be independently reviewed by a neuroradiologist. This software
 does not determine tumor grade, pathology, or clinical treatment.
+
+
+## Recommended documented atlas: Harvard-Oxford cortical
+
+The FSL Harvard-Oxford cortical atlas is documented at
+https://fsl.fmrib.ox.ac.uk/fsl/docs/other/datasets.html .
+Obtain the corresponding **maxprob** label NIfTI and
+`HarvardOxford-Cortical.xml` from the FSL distribution, subject to its
+license. Use the correct MNI152 template matching the label volume.
+The standard non-lateralized cortical maxprob atlas does **not** encode
+hemisphere in its region IDs.
+
+Generate a conservative label-to-lobe mapping from its original XML:
+
+```powershell
+C:\NeuroScopeAI\train-env\Scripts\python.exe -m app.harvard_oxford_mapping `
+  --xml "C:\path\HarvardOxford-Cortical.xml" `
+  --out "C:\NeuroScopeAI\atlas_registration\harvard_oxford_mapping_report.json"
+```
+
+The resulting JSON contains `mapping` (copy **only this object** into the
+web form), `excluded` (ambiguous or unmapped structures), and provenance.
+**Do not assign left/right** using the standard atlas; this mapping uses
+`Unknown` hemisphere. For defensible hemispheric claims use a separately
+validated *lateralized* atlas with a documented label scheme.
+
+FSL documentation states that in 3D maxprob summary images, label value
+equals XML index **plus one**:
+https://fsl.fmrib.ox.ac.uk/fsl/docs/other/atlas_xml.html .
+
+This atlas is based on healthy anatomical reference data. Brain tumors
+can cause displacement, deformation and edema; rigid registration may be
+insufficient. The generated mapping is intentionally incomplete and cannot
+be used as an anatomical ground truth or clinical localization without QA.
