@@ -59,6 +59,9 @@ function App() {
   const [error, setError] = useState('')
   const [studyLabel, setStudyLabel] = useState('')
   const [studyNote, setStudyNote] = useState('')
+  const [reportData, setReportData] = useState<any>(null)
+  const [reportBusy, setReportBusy] = useState(false)
+  const [reportError, setReportError] = useState('')
   const [volumeIndex, setVolumeIndex] = useState(0)
   const [sessionMessage, setSessionMessage] = useState('')
   const [preprocessSummary, setPreprocessSummary] = useState<{nonzero_voxels:number; normalized_mean:number; normalized_std:number; clipping_percentiles:number[]} | null>(null)
@@ -81,6 +84,7 @@ function App() {
     setError('')
     setResult(null)
     setSegmentation(null)
+    setReportData(null)
     setShowOverlay(true)
     setViews({ sagittal: defaultView(), coronal: defaultView(), axial: defaultView() })
     const data = new FormData()
@@ -159,6 +163,21 @@ function App() {
     }
   }
 
+  async function loadResearchReport() {
+    if (!result || !segmentation) return
+    setReportBusy(true)
+    setReportError('')
+    try {
+      const response = await fetch(`/api/studies/${encodeURIComponent(result.study_id)}/ai/report`)
+      const body = await parseApiResponse(response, 'Unable to load research report')
+      setReportData(body)
+    } catch (err) {
+      setReportError(err instanceof Error ? err.message : 'Report loading failed')
+    } finally {
+      setReportBusy(false)
+    }
+  }
+
   async function exportMask() {
     if (!result || !segmentation) return
     setError('')
@@ -210,6 +229,7 @@ function App() {
       setResult(previous => previous?.study_id === studyId
         ? { ...previous, previews: body.previews, slice_indices: body.slice_indices } : previous)
       setSegmentation(body)
+      setReportData(null)
       setShowOverlay(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Research segmentation failed')
@@ -228,6 +248,7 @@ function App() {
       setResult(null)
       setPreprocessSummary(null)
       setSegmentation(null)
+      setReportData(null)
       setFile(null)
       setStudyLabel('')
       setStudyNote('')
@@ -255,7 +276,52 @@ function App() {
           <h1>{page}</h1><p>AI-assisted brain MRI research platform</p></div>
         <div className="avatar" aria-label="Research user">R</div>
       </header>
-      {page === 'Studies' ? <section className="panel">
+      {page === 'Reports' ? <section className="panel report-page">
+        <div className="panel-heading"><div><h2>Research Segmentation Report</h2>
+          <p>Session-based experimental MRI analysis. No clinical interpretation or persistent patient records.</p></div>
+          <span className="tag">Research only</span></div>
+        {!result || !segmentation ? <div className="study-empty">
+          <FileText size={34}/><p>No completed segmentation in the active session. Run FLAIR research segmentation first.</p>
+          <button className="primary" onClick={() => setPage('MRI Analysis')}>Open MRI Analysis</button>
+        </div> : <>
+          <div className="study-actions report-actions">
+            <button className="primary" disabled={reportBusy} onClick={loadResearchReport}>
+              {reportBusy ? 'Loading…' : reportData ? 'Refresh Report' : 'Generate Research Report'}
+            </button>
+            <button className="secondary" disabled={!reportData} onClick={() => window.print()}>Print / Save as PDF</button>
+            <button className="secondary" onClick={exportReport}>Download JSON</button>
+            <button className="secondary" onClick={exportMask}>Download NIfTI Mask</button>
+          </div>
+          {reportError && <p className="error" role="alert">{reportError}</p>}
+          {reportData && <article className="report-document">
+            <div className="report-topline"><Brain size={30}/><div><strong>NeuroScope AI</strong><span>Experimental MRI Research Report</span></div></div>
+            <h3>Whole-Tumor Segmentation Summary</h3>
+            <p className="report-warning"><b>RESEARCH USE ONLY.</b> Not for clinical diagnosis, treatment planning, or patient management.</p>
+            <div className="report-stats">
+              <div><span>Estimated mask volume</span><strong>{reportData.estimated_mask_volume_ml.toFixed(3)} mL</strong></div>
+              <div><span>Segmented voxels</span><strong>{reportData.segmented_voxels.toLocaleString()}</strong></div>
+              <div><span>Threshold</span><strong>{reportData.threshold.toFixed(2)}</strong></div>
+            </div>
+            <h4>Study & Model Details</h4>
+            <dl className="report-details">
+              <div><dt>Research study label</dt><dd>{studyLabel || 'Untitled session'}</dd></div>
+              <div><dt>Input modality</dt><dd>{reportData.modality}</dd></div>
+              <div><dt>Segmentation task</dt><dd>{reportData.task.replaceAll('_', ' ')}</dd></div>
+              <div><dt>Volume dimensions</dt><dd>{reportData.image_shape.join(' × ')} voxels</dd></div>
+              <div><dt>Voxel spacing</dt><dd>{reportData.voxel_spacing_mm.join(' × ')} mm</dd></div>
+              <div><dt>Postprocessing</dt><dd>{reportData.postprocessing.replaceAll('_', ' ')}</dd></div>
+            </dl>
+            <h4>Selected MRI Views</h4>
+            <div className="report-images">{(['axial','coronal','sagittal'] as const).map(plane =>
+              <figure key={plane}><img src={result.previews[plane]} alt={`${plane} research MRI preview`}/><figcaption>{plane.toUpperCase()} · slice {result.slice_indices[plane] + 1}</figcaption></figure>
+            )}</div>
+            {studyNote && <><h4>Research Notes (local session)</h4><p className="report-notes">{studyNote}</p></>}
+            <h4>Methodological Limitations</h4>
+            <ul>{reportData.limitations.map((item:string) => <li key={item}>{item}</li>)}</ul>
+            <p className="report-footnote">Generated from the current temporary study session. The displayed mask is an experimental model prediction, not a verified tumor boundary.</p>
+          </article>}
+        </>}
+      </section> : page === 'Studies' ? <section className="panel">
         <div className="panel-heading"><div><h2>Active MRI Study</h2>
           <p>Manage the current temporary research session. No patient registry or permanent storage is enabled.</p></div>
           <span className="tag">Session only</span></div>
@@ -405,7 +471,7 @@ function App() {
           <p>This module is planned for the next development phase. No patient records or AI outputs are fabricated.</p>
           <button className="secondary" onClick={() => setPage('MRI Analysis')}>Go to MRI Analysis</button>
         </section>}
-      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.11</footer>
+      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.12</footer>
     </main>
   </div>
 }
