@@ -11,7 +11,7 @@ from fastapi import Query
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="NeuroScope AI Research API", version="0.9.0")
+app = FastAPI(title="NeuroScope AI Research API", version="0.13.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -64,6 +64,13 @@ def _get_session(study_id: str):
         return item
 
 
+def _infer_brats_modality(filename: str):
+    """Identify only explicit BraTS NIfTI filename suffixes."""
+    import re
+    match = re.search(r"(?:^|[_-])(flair|t1ce|t1|t2)\.nii(?:\.gz)?$", filename, re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
 @app.post("/api/studies/inspect")
 async def inspect_study(file: UploadFile = File(...), volume_index: int = Query(default=0, ge=0)):
     if not file.filename or not file.filename.lower().endswith((".nii", ".nii.gz")):
@@ -111,10 +118,11 @@ async def inspect_study(file: UploadFile = File(...), volume_index: int = Query(
             with _cache_lock:
                 _cache.clear()  # Single-study research workstation; bounded memory.
                 _cache[study_id] = {"volume": volume, "lower": lower, "upper": upper,
-                                    "affine": image.affine.copy(), "last_access": time.monotonic(), "mask": None, "spacing": list(map(float, __import__("numpy").linalg.norm(image.affine[:3, :3], axis=0)))}
+                                    "source_filename": file.filename, "source_modality": _infer_brats_modality(file.filename), "affine": image.affine.copy(), "last_access": time.monotonic(), "mask": None, "spacing": list(map(float, __import__("numpy").linalg.norm(image.affine[:3, :3], axis=0)))}
             return {
                 "study_id": study_id,
                 "filename": file.filename,
+                "source_modality": _infer_brats_modality(file.filename),
                 "shape": list(volume.shape),
                 "original_shape": original_shape,
                 "volume_count": volume_count,
@@ -194,6 +202,8 @@ def segment_study(study_id: str, modality: str = Query(default="flair")):
     if modality.lower() != "flair":
         raise HTTPException(status_code=422, detail="This model supports FLAIR only")
     item = _get_session(study_id)
+    if item.get("source_modality") in ("T1", "T1CE", "T2"):
+        raise HTTPException(status_code=422, detail="This file is labeled " + item["source_modality"] + "; the trained model requires FLAIR. Upload the matching _flair.nii.gz volume.")
     from app.inference import infer, overlay_png
     try:
         mask = infer(item["volume"])
@@ -227,7 +237,10 @@ def segmentation_report(study_id: str):
         raise HTTPException(status_code=409, detail="Run research segmentation before requesting a report")
     voxel_volume = float(np.prod(item["spacing"]))
     return {
-        "schema_version": "1.0", "study_id": study_id,
+        "schema_version": "1.1", "study_id": study_id,
+        "source_filename": item.get("source_filename"),
+        "filename_modality": item.get("source_modality"),
+        "modality_verification": "filename_suffix_only" if item.get("source_modality") else "user_attestation_only",
         "task": "binary_whole_tumor", "modality": "FLAIR",
         "threshold": 0.90, "postprocessing": "largest_3d_component",
         "image_shape": list(item["volume"].shape),
