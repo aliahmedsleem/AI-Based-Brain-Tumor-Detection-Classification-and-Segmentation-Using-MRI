@@ -9,6 +9,7 @@ import './style.css'
 type StudyMetadata = {
   study_id: string
   filename: string
+  source_modality?: string | null
   shape: number[]
   original_shape: number[]
   volume_count: number
@@ -218,7 +219,7 @@ function App() {
   }
 
   async function runSegmentation() {
-    if (!result || !confirmFlair) return
+    if (!result || !confirmFlair || (result.source_modality && result.source_modality !== "FLAIR")) return
     const studyId = result.study_id
     setSegmentBusy(true)
     setError('')
@@ -305,7 +306,8 @@ function App() {
             <h4>Study & Model Details</h4>
             <dl className="report-details">
               <div><dt>Research study label</dt><dd>{studyLabel || 'Untitled session'}</dd></div>
-              <div><dt>Input modality</dt><dd>{reportData.modality}</dd></div>
+              <div><dt>Model input modality</dt><dd>{reportData.modality}</dd></div>
+              <div><dt>Filename modality evidence</dt><dd>{reportData.filename_modality || "Unknown (user attestation only)"}</dd></div>
               <div><dt>Segmentation task</dt><dd>{reportData.task.replaceAll('_', ' ')}</dd></div>
               <div><dt>Volume dimensions</dt><dd>{reportData.image_shape.join(' × ')} voxels</dd></div>
               <div><dt>Voxel spacing</dt><dd>{reportData.voxel_spacing_mm.join(' × ')} mm</dd></div>
@@ -385,6 +387,7 @@ function App() {
           {error && <div role="alert" className="error">{error}</div>}
           {result && <div className="result"><h3>Image metadata</h3>
             {result.notice && <p role="status" className="volume-notice">{result.notice}</p>}
+            <p><b>Filename modality:</b> {result.source_modality || "Unknown — user confirmation required"}</p>
             <p>Source dimensions: {result.original_shape.join(' × ')}</p>
             <p>Selected volume: {result.selected_volume + 1} of {result.volume_count}</p>
             <p>Dimensions: {result.shape.join(' × ')}</p>
@@ -393,8 +396,9 @@ function App() {
             <div className="preprocess-panel">
               <h3>Experimental AI segmentation</h3>
               <p>Research-only binary whole-tumor mask. Requires a locally configured trained model and a genuine FLAIR MRI volume. Not for diagnosis.</p>
-              <label><input type="checkbox" checked={confirmFlair} onChange={e => setConfirmFlair(e.target.checked)} /> I confirm this volume is FLAIR MRI and contains no patient identifiers.</label>
-              <div><button className="primary" disabled={!confirmFlair || segmentBusy} onClick={runSegmentation}>
+              {result.source_modality && result.source_modality !== "FLAIR" && <p className="error" role="alert">This file is labeled {result.source_modality}. The model accepts FLAIR only. Upload the matching _flair.nii.gz file.</p>}
+              <label><input type="checkbox" disabled={Boolean(result.source_modality && result.source_modality !== "FLAIR")} checked={confirmFlair} onChange={e => setConfirmFlair(e.target.checked)} /> I confirm this volume is FLAIR MRI and contains no patient identifiers.</label>
+              <div><button className="primary" disabled={!confirmFlair || segmentBusy || Boolean(result.source_modality && result.source_modality !== "FLAIR")} onClick={runSegmentation}>
                 {segmentBusy ? 'Segmenting on GPU…' : 'Run Research Segmentation'}
               </button></div>
               {segmentation && <div role="status">
@@ -471,7 +475,7 @@ function App() {
           <p>This module is planned for the next development phase. No patient records or AI outputs are fabricated.</p>
           <button className="secondary" onClick={() => setPage('MRI Analysis')}>Go to MRI Analysis</button>
         </section>}
-      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.12</footer>
+      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.13</footer>
     </main>
   </div>
 }
