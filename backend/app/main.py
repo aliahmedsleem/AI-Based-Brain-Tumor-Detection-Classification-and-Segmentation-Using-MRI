@@ -11,7 +11,7 @@ from fastapi import Query
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="NeuroScope AI Research API", version="0.13.0")
+app = FastAPI(title="NeuroScope AI Research API", version="0.14.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -248,11 +248,15 @@ def segmentation_report(study_id: str):
         "segmented_voxels": int(np.count_nonzero(mask)),
         "estimated_mask_volume_ml": round(float(np.count_nonzero(mask)) * voxel_volume / 1000, 3),
         "research_only": True,
+        "mask_geometry": __import__("app.mask_measurements", fromlist=["describe_mask"]).describe_mask(mask, item["affine"]),
+        "ground_truth_comparison": item.get("ground_truth_comparison"),
         "limitations": [
             "Experimental research segmentation; not a medical diagnosis.",
             "Mask volume is not a clinical measurement.",
             "Model trained for FLAIR MRI and binary whole-tumor segmentation only.",
             "Held-out test evaluation used eight cases from the BraTS2021 dataset.",
+            "Bounding-box dimensions are not maximal clinical tumor diameters.",
+            "Anatomical lobe and laterality cannot be established without validated atlas registration and specialist review.",
         ],
     }
 
@@ -276,3 +280,50 @@ def export_mask_nifti(study_id: str):
     return Response(content=payload, media_type="application/gzip",
                     headers={"Content-Disposition": 'attachment; filename="neuroscope_whole_tumor_mask.nii.gz"',
                              "Cache-Control": "no-store"})
+
+
+@app.post("/api/studies/{study_id}/ai/compare-reference")
+async def compare_reference(study_id: str, file: UploadFile = File(...)):
+    """Compare current mask with a registered ground-truth NIfTI in the same geometry."""
+    import nibabel as nib
+    import numpy as np
+    from app.mask_measurements import compare_masks
+    item = _get_session(study_id)
+    if item.get("mask") is None:
+        raise HTTPException(status_code=409, detail="Run segmentation first")
+    if not file.filename or not file.filename.lower().endswith((".nii", ".nii.gz")):
+        raise HTTPException(status_code=422, detail="Ground truth must be .nii or .nii.gz")
+    with tempfile.TemporaryDirectory() as directory:
+        suffix = ".nii.gz" if file.filename.lower().endswith(".nii.gz") else ".nii"
+        path = Path(directory) / ("reference" + suffix)
+        size = 0
+        with path.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > 256 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Reference exceeds 256 MiB")
+                output.write(chunk)
+        try:
+            image = nib.as_closest_canonical(nib.load(str(path), mmap=False, keep_file_open=False))
+            if image.ndim != 3 or image.shape != item["volume"].shape:
+                raise HTTPException(status_code=422, detail="Reference shape does not match MRI")
+            if not np.allclose(image.affine, item["affine"], rtol=1e-4, atol=1e-3):
+                raise HTTPException(status_code=422, detail="Reference affine does not match MRI; registration required")
+            data = image.get_fdata(dtype=np.float32, caching="unchanged")
+            image.uncache()
+            if not np.isfinite(data).all():
+                raise HTTPException(status_code=422, detail="Reference contains non-finite values")
+            labels = np.unique(data)
+            if not np.all(np.isin(labels, [0, 1, 2, 4])):
+                raise HTTPException(status_code=422, detail="Expected BraTS labels 0, 1, 2, 4")
+            reference = data > 0
+            metrics = compare_masks(item["mask"], reference)
+            with _cache_lock:
+                if _cache.get(study_id) is not item:
+                    raise HTTPException(status_code=404, detail="Study session expired")
+                item["ground_truth_comparison"] = metrics
+            return {"partition": "single_uploaded_reference", "reference_filename": file.filename,
+                    "task": "binary_whole_tumor", "metrics": metrics,
+                    "note": "Research comparison only; reference labels are not a clinical diagnosis."}
+        except (OSError, EOFError, ValueError, nib.filebasedimages.ImageFileError) as exc:
+            raise HTTPException(status_code=422, detail="Invalid reference NIfTI") from exc
