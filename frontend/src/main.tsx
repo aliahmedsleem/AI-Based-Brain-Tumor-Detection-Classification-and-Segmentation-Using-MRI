@@ -24,6 +24,23 @@ const items = [
   { name: 'Settings', icon: Settings },
 ]
 
+async function parseApiResponse(response: Response, fallback: string) {
+  const raw = await response.text()
+  let body: any
+  try {
+    body = JSON.parse(raw)
+  } catch {
+    throw new Error(response.ok
+      ? 'Server returned an invalid response.'
+      : `Server error (HTTP ${response.status}). Check the FastAPI terminal for details.`)
+  }
+  if (!response.ok) {
+    const detail = body?.detail
+    throw new Error(typeof detail === 'string' ? detail : fallback)
+  }
+  return body
+}
+
 function App() {
   const [page, setPage] = useState('Dashboard')
   const [file, setFile] = useState<File | null>(null)
@@ -41,8 +58,7 @@ function App() {
     data.append('file', file)
     try {
       const response = await fetch('/api/studies/inspect', { method: 'POST', body: data })
-      const body = await response.json()
-      if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Inspection failed')
+      const body = await parseApiResponse(response, 'MRI inspection failed')
       setResult(body as StudyMetadata)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unexpected error')
@@ -61,8 +77,7 @@ function App() {
     try {
       const params = new URLSearchParams(Object.entries(next).map(([key, value]) => [key, String(value)]))
       const response = await fetch('/api/studies/slices?' + params.toString(), { method: 'POST', body: data })
-      const body = await response.json()
-      if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Unable to render slice')
+      const body = await parseApiResponse(response, 'Unable to render MRI slice')
       setResult(previous => previous ? { ...previous, previews: body.previews, slice_indices: body.slice_indices } : null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Slice rendering failed')
