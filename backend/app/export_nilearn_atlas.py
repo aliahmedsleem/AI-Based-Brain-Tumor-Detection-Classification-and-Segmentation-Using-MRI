@@ -22,10 +22,14 @@ def export(data_dir, out_dir, atlas_name="cort-maxprob-thr25-1mm"):
     atlas = datasets.fetch_atlas_harvard_oxford(
         atlas_name, data_dir=str(data_dir), symmetric_split=False
     )
-    img = nib.load(str(atlas.maps))
+    # Nilearn versions may return a loaded Nifti image or a filesystem path.
+    img = atlas.maps if isinstance(atlas.maps, nib.spatialimages.SpatialImage) else nib.load(str(atlas.maps))
+    atlas_file = out_dir / "harvard_oxford_cortical_maxprob.nii.gz"
+    nib.save(img, str(atlas_file))
     labels = [str(name) for name in atlas.labels]
-    codes = np.unique(np.asanyarray(img.dataobj)).astype(int)
-    if not np.allclose(codes, np.unique(np.asanyarray(img.dataobj))):
+    raw_codes = np.unique(np.asanyarray(img.dataobj))
+    codes = raw_codes.astype(int)
+    if not np.allclose(codes, raw_codes):
         raise ValueError("Atlas is not integer-labeled")
     if any(code < 0 or code >= len(labels) for code in codes):
         raise ValueError("Atlas label values do not match Nilearn label indices")
@@ -48,7 +52,7 @@ def export(data_dir, out_dir, atlas_name="cort-maxprob-thr25-1mm"):
     report = {
         "status": "atlas_export_only_requires_registration",
         "atlas_name": atlas_name,
-        "atlas_nifti": str(atlas.maps),
+        "atlas_nifti": str(atlas_file),
         "atlas_shape": list(img.shape),
         "labels_total": len(labels),
         "mapped": len(mapping),
