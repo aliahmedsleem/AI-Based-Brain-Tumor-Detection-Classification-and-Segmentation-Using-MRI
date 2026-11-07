@@ -89,7 +89,10 @@ def run(subject_path, template_path, labels_path, affine_path, out_dir,
     sitk.WriteImage(aligned, str(out / "registered_template.nii.gz"))
     sitk.WriteImage(atlas, str(out / "registered_atlas.nii.gz"))
     sitk.WriteImage(jacobian, str(out / "jacobian_determinant.nii.gz"))
-    sitk.WriteTransform(composite, str(out / "template_to_subject_composite.h5"))
+    # Flatten nested CompositeTransforms before HDF5 serialization.
+    serializable = sitk.CompositeTransform(composite)
+    serializable.FlattenTransform()
+    sitk.WriteTransform(serializable, str(out / "template_to_subject_composite.h5"))
     fixed_arr = sitk.GetArrayFromImage(subject)
     moving_arr = sitk.GetArrayFromImage(aligned)
     def gray(a):
