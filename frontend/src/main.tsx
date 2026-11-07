@@ -63,6 +63,9 @@ function App() {
   const [sessionMessage, setSessionMessage] = useState('')
   const [preprocessSummary, setPreprocessSummary] = useState<{nonzero_voxels:number; normalized_mean:number; normalized_std:number; clipping_percentiles:number[]} | null>(null)
   const [preprocessBusy, setPreprocessBusy] = useState(false)
+  const [segmentBusy, setSegmentBusy] = useState(false)
+  const [segmentation, setSegmentation] = useState<{segmented_voxels:number; estimated_mask_volume_ml:number; notice:string} | null>(null)
+  const [confirmFlair, setConfirmFlair] = useState(false)
   const [views, setViews] = useState<Record<Plane, View>>({ sagittal: defaultView(), coronal: defaultView(), axial: defaultView() })
   const drag = useRef<{ plane: Plane; x: number; y: number } | null>(null)
   function updateView(plane: Plane, patch: Partial<View>) {
@@ -75,6 +78,7 @@ function App() {
     setBusy(true)
     setError('')
     setResult(null)
+    setSegmentation(null)
     setViews({ sagittal: defaultView(), coronal: defaultView(), axial: defaultView() })
     const data = new FormData()
     data.append('file', file)
@@ -130,6 +134,25 @@ function App() {
     }
   }
 
+  async function runSegmentation() {
+    if (!result || !confirmFlair) return
+    const studyId = result.study_id
+    setSegmentBusy(true)
+    setError('')
+    try {
+      const response = await fetch(`/api/studies/${encodeURIComponent(studyId)}/ai/segment?modality=flair`, { method: 'POST' })
+      const body = await parseApiResponse(response, 'Research segmentation failed')
+      Object.values(sliceRequests.current).forEach(controller => controller?.abort())
+      setResult(previous => previous?.study_id === studyId
+        ? { ...previous, previews: body.previews, slice_indices: body.slice_indices } : previous)
+      setSegmentation(body)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Research segmentation failed')
+    } finally {
+      setSegmentBusy(false)
+    }
+  }
+
   async function releaseStudy() {
     if (!result) return
     const studyId = result.study_id
@@ -139,6 +162,7 @@ function App() {
       Object.values(sliceRequests.current).forEach(controller => controller?.abort())
       setResult(null)
       setPreprocessSummary(null)
+      setSegmentation(null)
       setFile(null)
       setStudyLabel('')
       setStudyNote('')
@@ -179,7 +203,7 @@ function App() {
             <p><b>Original file:</b> {result.filename}</p>
             <p><b>Volume:</b> {result.shape.join(' × ')} voxels</p>
             <p><b>Orientation:</b> {result.orientation}</p>
-            <p><b>AI analysis:</b> Not available</p>
+            <p><b>AI analysis:</b> {segmentation ? `Experimental mask: ${segmentation.estimated_mask_volume_ml} mL` : "Not run"}</p>
             <p><b>Retention:</b> Temporary in-memory session, expires after 10 minutes idle; one active study per server.</p>
           </div>
           <div className="study-actions">
@@ -191,7 +215,7 @@ function App() {
         {sessionMessage && <p role="status">{sessionMessage}</p>}
       </section> : page === 'Dashboard' ? <>
         <section className="notice"><AlertCircle size={21} /><div><b>Development environment</b>
-          <div>AI inference is not connected yet. No diagnostic results are generated.</div></div></section>
+          <div>Experimental local AI segmentation is available when a compatible checkpoint is configured. No diagnostic results are generated.</div></div></section>
         <div className="metrics">
           {([
             ['Studies processed', '0', Database],
@@ -212,13 +236,13 @@ function App() {
       </> : page === 'MRI Analysis' ?
         <section className="panel">
           <div className="panel-heading"><div><h2>MRI Study Inspection</h2>
-            <p>Phase 1: metadata inspection. Segmentation and classification are not yet available.</p></div>
+            <p>MRI inspection and optional research-only FLAIR whole-tumor segmentation. Classification is not available.</p></div>
             <span className="tag">NIfTI</span></div>
           <label className="drop"><UploadCloud size={36} />
             <strong>{file ? file.name : 'Choose a brain MRI volume'}</strong>
             <span>Supported: .nii, .nii.gz · Up to 256 MiB</span>
             <input type="file" accept=".nii,.gz"
-              onChange={e => { Object.values(sliceRequests.current).forEach(controller => controller?.abort()); setFile(e.target.files?.[0] || null); setResult(null); setVolumeIndex(0); setError('') }} />
+              onChange={e => { Object.values(sliceRequests.current).forEach(controller => controller?.abort()); setFile(e.target.files?.[0] || null); setResult(null); setSegmentation(null); setConfirmFlair(false); setVolumeIndex(0); setError('') }} />
           </label>
           <label className="volume-selector">4D volume index (0-based; use 0 for ordinary 3D MRI)
             <input type="number" min={0} max={999} step={1} value={volumeIndex} disabled={busy}
@@ -235,7 +259,20 @@ function App() {
             <p>Dimensions: {result.shape.join(' × ')}</p>
             <p>Voxel spacing: {result.voxel_spacing_mm.map(v => v.toFixed(2)).join(' × ')} mm</p>
             <p>Orientation: {result.orientation} (canonical)</p>
-            <p>AI analysis: Not available in this phase</p>
+            <div className="preprocess-panel">
+              <h3>Experimental AI segmentation</h3>
+              <p>Research-only binary whole-tumor mask. Requires a locally configured trained model and a genuine FLAIR MRI volume. Not for diagnosis.</p>
+              <label><input type="checkbox" checked={confirmFlair} onChange={e => setConfirmFlair(e.target.checked)} /> I confirm this volume is FLAIR MRI and contains no patient identifiers.</label>
+              <div><button className="primary" disabled={!confirmFlair || segmentBusy} onClick={runSegmentation}>
+                {segmentBusy ? 'Segmenting on GPU…' : 'Run Research Segmentation'}
+              </button></div>
+              {segmentation && <div role="status">
+                <p><b>Estimated mask volume:</b> {segmentation.estimated_mask_volume_ml} mL</p>
+                <p><b>Segmented voxels:</b> {segmentation.segmented_voxels.toLocaleString()}</p>
+                <p><b>Threshold:</b> 0.90 · Largest connected component</p>
+                <p>{segmentation.notice}</p>
+              </div>}
+            </div>
             <div className="preprocess-panel">
               <h3>Research preprocessing</h3>
               <p>Inspect intensity normalization statistics. This does not detect, classify or segment tumors.</p>
@@ -285,14 +322,14 @@ function App() {
                     onChange={e => changeSlice(plane, Number(e.target.value))} aria-label={`${plane} slice`} /></label>
               </figure>
             )}</div>
-            <p className="preview-note">Interactive slice navigation, zoom, drag-to-pan, brightness and contrast. Slices are rendered from a temporary in-memory session without re-uploading the volume. Sessions expire after 10 minutes of inactivity. No tumor segmentation or diagnostic inference.</p>
+            <p className="preview-note">Interactive slice navigation, zoom, drag-to-pan, brightness and contrast. Slices are rendered from a temporary in-memory session without re-uploading the volume. Sessions expire after 10 minutes of inactivity. Red overlay indicates experimental segmentation when enabled; not a diagnosis.</p>
           </div>}
         </section> :
         <section className="panel empty"><h2>{page}</h2>
           <p>This module is planned for the next development phase. No patient records or AI outputs are fabricated.</p>
           <button className="secondary" onClick={() => setPage('MRI Analysis')}>Go to MRI Analysis</button>
         </section>}
-      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.8</footer>
+      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.9</footer>
     </main>
   </div>
 }
