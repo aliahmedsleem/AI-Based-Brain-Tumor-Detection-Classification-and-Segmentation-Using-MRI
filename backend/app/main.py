@@ -11,7 +11,7 @@ from fastapi import Query
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="NeuroScope AI Research API", version="0.14.0")
+app = FastAPI(title="NeuroScope AI Research API", version="0.15.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -250,6 +250,7 @@ def segmentation_report(study_id: str):
         "research_only": True,
         "mask_geometry": __import__("app.mask_measurements", fromlist=["describe_mask"]).describe_mask(mask, item["affine"]),
         "ground_truth_comparison": item.get("ground_truth_comparison"),
+        "anatomical_localization": item.get("anatomical_localization"),
         "limitations": [
             "Experimental research segmentation; not a medical diagnosis.",
             "Mask volume is not a clinical measurement.",
@@ -327,3 +328,62 @@ async def compare_reference(study_id: str, file: UploadFile = File(...)):
                     "note": "Research comparison only; reference labels are not a clinical diagnosis."}
         except (OSError, EOFError, ValueError, nib.filebasedimages.ImageFileError) as exc:
             raise HTTPException(status_code=422, detail="Invalid reference NIfTI") from exc
+
+
+@app.post("/api/studies/{study_id}/ai/localize-atlas")
+async def localize_registered_atlas(
+    study_id: str,
+    file: UploadFile = File(...),
+    labels_json: str = __import__("fastapi").Form(...),
+    registration_verified: bool = __import__("fastapi").Form(False),
+):
+    """Research atlas-overlap only. Requires external registration and manual QA.
+
+    NIfTI affine equality is necessary but not sufficient to prove registration.
+    """
+    import json
+    import nibabel as nib
+    import numpy as np
+    from app.anatomical_localization import atlas_overlap
+    item = _get_session(study_id)
+    if item.get("mask") is None:
+        raise HTTPException(status_code=409, detail="Run segmentation first")
+    if not registration_verified:
+        raise HTTPException(status_code=422, detail="Registration quality must be reviewed before atlas localization")
+    if not file.filename or not file.filename.lower().endswith((".nii", ".nii.gz")):
+        raise HTTPException(status_code=422, detail="Registered atlas must be NIfTI")
+    try:
+        definitions = json.loads(labels_json)
+        if not isinstance(definitions, dict) or not definitions:
+            raise ValueError("Atlas label mapping must be a nonempty JSON object")
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid atlas labels JSON") from exc
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / ("atlas.nii.gz" if file.filename.lower().endswith(".gz") else "atlas.nii")
+        size = 0
+        with path.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > 256 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Atlas exceeds 256 MiB")
+                output.write(chunk)
+        try:
+            atlas = nib.as_closest_canonical(nib.load(str(path), mmap=False, keep_file_open=False))
+            if atlas.ndim != 3 or atlas.shape != item["volume"].shape:
+                raise HTTPException(status_code=422, detail="Atlas must match MRI 3D shape")
+            if not np.allclose(atlas.affine, item["affine"], rtol=1e-4, atol=1e-3):
+                raise HTTPException(status_code=422, detail="Atlas affine mismatch: register and resample using nearest-neighbor interpolation")
+            labels = atlas.get_fdata(dtype=np.float32, caching="unchanged")
+            atlas.uncache()
+            if not np.all(np.isfinite(labels)) or not np.all(labels == np.rint(labels)):
+                raise HTTPException(status_code=422, detail="Atlas must contain finite integer labels")
+            result = atlas_overlap(item["mask"], labels, definitions)
+            result["registration_qa"] = "user_attested_not_independently_verified"
+            result["atlas_filename"] = file.filename
+            with _cache_lock:
+                if _cache.get(study_id) is not item:
+                    raise HTTPException(status_code=404, detail="Study session expired")
+                item["anatomical_localization"] = result
+            return result
+        except (OSError, EOFError, ValueError, nib.filebasedimages.ImageFileError) as exc:
+            raise HTTPException(status_code=422, detail="Invalid atlas data or label definitions") from exc
