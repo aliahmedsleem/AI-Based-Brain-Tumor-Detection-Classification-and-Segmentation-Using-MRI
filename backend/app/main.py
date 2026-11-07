@@ -10,7 +10,7 @@ from fastapi import Query
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="NeuroScope AI Research API", version="0.5.0")
+app = FastAPI(title="NeuroScope AI Research API", version="0.6.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -134,3 +134,12 @@ def release_study(study_id: str):
     with _cache_lock:
         _cache.pop(study_id, None)
     return {"released": True}
+
+
+@app.get("/api/studies/{study_id}")
+def study_session_status(study_id: str):
+    """Metadata-only session status; no medical image data is returned."""
+    item = _get_session(study_id)
+    return {"study_id": study_id, "shape": list(item["volume"].shape),
+            "expires_after_inactive_seconds": CACHE_TTL_SECONDS,
+            "analysis_available": False}
