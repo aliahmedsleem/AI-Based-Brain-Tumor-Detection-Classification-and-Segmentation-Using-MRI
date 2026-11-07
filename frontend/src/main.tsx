@@ -66,6 +66,11 @@ function App() {
   const [referenceFile, setReferenceFile] = useState<File | null>(null)
   const [referenceBusy, setReferenceBusy] = useState(false)
   const [referenceResult, setReferenceResult] = useState<any>(null)
+  const [atlasFile, setAtlasFile] = useState<File | null>(null)
+  const [atlasMapping, setAtlasMapping] = useState('')
+  const [atlasReviewed, setAtlasReviewed] = useState(false)
+  const [atlasBusy, setAtlasBusy] = useState(false)
+  const [atlasResult, setAtlasResult] = useState<any>(null)
   const [volumeIndex, setVolumeIndex] = useState(0)
   const [sessionMessage, setSessionMessage] = useState('')
   const [preprocessSummary, setPreprocessSummary] = useState<{nonzero_voxels:number; normalized_mean:number; normalized_std:number; clipping_percentiles:number[]} | null>(null)
@@ -166,6 +171,26 @@ function App() {
       } : previous)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to toggle overlay')
+    }
+  }
+
+  async function localizeAtlas() {
+    if (!result || !segmentation || !atlasFile || !atlasReviewed) return
+    setAtlasBusy(true)
+    setReportError('')
+    try {
+      const form = new FormData()
+      form.append('file', atlasFile)
+      form.append('labels_json', atlasMapping)
+      form.append('registration_verified', 'true')
+      const response = await fetch(`/api/studies/${encodeURIComponent(result.study_id)}/ai/localize-atlas`, {method: 'POST', body: form})
+      const body = await parseApiResponse(response, 'Atlas localization failed')
+      setAtlasResult(body)
+      setReportData(null)
+    } catch (err) {
+      setReportError(err instanceof Error ? err.message : 'Atlas localization failed')
+    } finally {
+      setAtlasBusy(false)
     }
   }
 
@@ -328,6 +353,17 @@ function App() {
             </button>
             {referenceResult && <p role="status">Dice: {referenceResult.metrics.dice.toFixed(4)} · Precision: {referenceResult.metrics.precision.toFixed(4)} · Recall: {referenceResult.metrics.recall.toFixed(4)}. Click Refresh Report to include these results.</p>}
           </div>
+          <div className="preprocess-panel">
+            <h3>Anatomical Atlas Localization — Advanced Research</h3>
+            <p>Requires an externally registered and visually verified anatomical atlas resampled to this MRI grid. Do not upload an unregistered template atlas. No anatomical result is generated without these prerequisites.</p>
+            <label>Registered atlas NIfTI <input type="file" accept=".nii,.gz" onChange={e => setAtlasFile(e.target.files?.[0] || null)} /></label>
+            <label>Atlas label mapping JSON (for example: {"{"}"10":{"{"}"lobe":"frontal","hemisphere":"Left"{"}"}{"}"})
+              <textarea rows={4} value={atlasMapping} onChange={e => setAtlasMapping(e.target.value)} placeholder='{"10":{"lobe":"frontal","hemisphere":"Left"}}' />
+            </label>
+            <label><input type="checkbox" checked={atlasReviewed} onChange={e => setAtlasReviewed(e.target.checked)} /> I confirm the atlas-to-MRI registration was visually reviewed and its label definitions are verified.</label>
+            <button className="secondary" disabled={!atlasFile || !atlasReviewed || !atlasMapping.trim() || atlasBusy} onClick={localizeAtlas}>{atlasBusy ? 'Computing overlap…' : 'Calculate Atlas Overlap'}</button>
+            {atlasResult && <p role="status">Atlas coverage: {(atlasResult.coverage_fraction * 100).toFixed(1)}%. {atlasResult.regions.map((region:any) => `${region.hemisphere} ${region.lobe}: ${(region.fraction_of_predicted_mask * 100).toFixed(1)}%`).join(' · ') || 'No mapped regions above reporting cutoff'}. Requires specialist confirmation.</p>}
+          </div>
           {reportError && <p className="error" role="alert">{reportError}</p>}
           {reportData && <article className="report-document">
             <div className="report-topline"><Brain size={30}/><div><strong>NeuroScope AI</strong><span>Experimental MRI Research Report</span></div></div>
@@ -357,6 +393,14 @@ function App() {
             <p><b>Anatomical region:</b> Not determined. Requires atlas registration and specialist assessment.</p>
             <p><b>Hemisphere:</b> {reportData.mask_geometry.hemisphere}</p>
             <p className="report-footnote">Bounding-box extent is not a clinical maximum diameter. Scanner/world coordinates do not independently establish a brain lobe or laterality.</p>
+            <h4>Atlas-Estimated Anatomical Location</h4>
+            {reportData.anatomical_localization ? <>
+              <p><b>Atlas coverage:</b> {(reportData.anatomical_localization.coverage_fraction * 100).toFixed(1)}% of predicted mask. Registration QA: user-attested, not independently verified.</p>
+              <ul>{reportData.anatomical_localization.regions.map((region:any) =>
+                <li key={region.label}>{region.hemisphere} {region.lobe}: {(region.fraction_of_predicted_mask * 100).toFixed(1)}% of predicted mask</li>
+              )}</ul>
+              <p className="report-footnote">Atlas-based estimates depend on registration and atlas definitions; not independently verified or clinically validated.</p>
+            </> : <p>Not available — registered anatomical atlas has not been supplied and verified.</p>}
             <h4>Reference Mask Verification</h4>
             {reportData.ground_truth_comparison ? <p>
               Dice: {reportData.ground_truth_comparison.dice.toFixed(4)} · Precision: {reportData.ground_truth_comparison.precision.toFixed(4)} · Recall: {reportData.ground_truth_comparison.recall.toFixed(4)}
@@ -525,7 +569,7 @@ function App() {
           <p>This module is planned for the next development phase. No patient records or AI outputs are fabricated.</p>
           <button className="secondary" onClick={() => setPage('MRI Analysis')}>Go to MRI Analysis</button>
         </section>}
-      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.14</footer>
+      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.15</footer>
     </main>
   </div>
 }
