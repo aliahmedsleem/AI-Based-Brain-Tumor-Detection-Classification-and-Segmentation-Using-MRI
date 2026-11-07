@@ -10,7 +10,7 @@ from fastapi import Query
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="NeuroScope AI Research API", version="0.6.0")
+app = FastAPI(title="NeuroScope AI Research API", version="0.7.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -62,7 +62,7 @@ def _get_session(study_id: str):
 
 
 @app.post("/api/studies/inspect")
-async def inspect_study(file: UploadFile = File(...)):
+async def inspect_study(file: UploadFile = File(...), volume_index: int = Query(default=0, ge=0)):
     if not file.filename or not file.filename.lower().endswith((".nii", ".nii.gz")):
         raise HTTPException(status_code=400, detail="Only .nii or .nii.gz supported")
     import nibabel as nib
@@ -80,12 +80,20 @@ async def inspect_study(file: UploadFile = File(...)):
                 output.write(chunk)
         try:
             image = nib.as_closest_canonical(nib.load(str(path), mmap=False, keep_file_open=False))
-            if len(image.shape) != 3 or np.prod(image.shape) > 100_000_000:
-                raise ValueError("Only 3D MRI volumes up to 100M voxels are supported")
+            if len(image.shape) not in (3, 4):
+                raise ValueError("Only 3D or 4D NIfTI volumes are supported")
+            original_shape = list(image.shape)
+            volume_count = image.shape[3] if len(image.shape) == 4 else 1
+            if volume_index >= volume_count:
+                raise HTTPException(status_code=422, detail="Volume index out of range")
+            if np.prod(image.shape[:3]) > 100_000_000:
+                raise ValueError("3D volume exceeds 100M voxels")
             if np.prod(image.shape) * 4 > CACHE_MAX_BYTES:
                 raise HTTPException(status_code=413, detail="Decoded MRI exceeds 256 MiB memory limit")
-            volume = image.get_fdata(dtype=np.float32, caching="unchanged")
+            all_data = image.get_fdata(dtype=np.float32, caching="unchanged")
             image.uncache()
+            volume = all_data[..., volume_index].copy() if len(image.shape) == 4 else all_data
+            del all_data
             finite = volume[np.isfinite(volume)]
             if finite.size == 0:
                 raise ValueError("No finite intensities")
@@ -93,7 +101,7 @@ async def inspect_study(file: UploadFile = File(...)):
             if upper <= lower:
                 upper = lower + 1
             volume = np.nan_to_num(volume, nan=lower, posinf=upper, neginf=lower, copy=False)
-            indices = {name: int(image.shape[axis] // 2) for axis, name in enumerate(("sagittal", "coronal", "axial"))}
+            indices = {name: int(volume.shape[axis] // 2) for axis, name in enumerate(("sagittal", "coronal", "axial"))}
             previews = {name: preview_image(volume, axis, indices[name], lower, upper)
                         for axis, name in enumerate(indices)}
             study_id = secrets.token_urlsafe(32)
@@ -104,16 +112,20 @@ async def inspect_study(file: UploadFile = File(...)):
             return {
                 "study_id": study_id,
                 "filename": file.filename,
-                "shape": list(image.shape),
+                "shape": list(volume.shape),
+                "original_shape": original_shape,
+                "volume_count": volume_count,
+                "selected_volume": volume_index,
                 "voxel_spacing_mm": list(map(float, image.header.get_zooms()[:3])),
                 "orientation": "".join(nib.aff2axcodes(image.affine)),
                 "previews": previews,
                 "slice_indices": indices,
                 "status": "inspected",
+                "notice": "4D input: displaying one selected volume only; sequence identity is not inferred." if volume_count > 1 else None,
                 "analysis_available": False,
             }
         except (ValueError, OSError, EOFError, nib.filebasedimages.ImageFileError) as exc:
-            raise HTTPException(status_code=422, detail="Invalid or unsupported 3D NIfTI volume") from exc
+            raise HTTPException(status_code=422, detail="Invalid or unsupported NIfTI volume") from exc
 
 
 @app.get("/api/studies/{study_id}/slice/{plane}")
