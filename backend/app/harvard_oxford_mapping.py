@@ -30,19 +30,28 @@ def generate_mapping(xml_path: Path):
     name = root.findtext("./header/name", default="")
     if "Harvard-Oxford Cortical" not in name:
         raise ValueError("This mapper only supports the Harvard-Oxford Cortical XML")
+    atlas_type = root.findtext("./header/type", default="").strip().lower()
+    if atlas_type and atlas_type not in ("probabilistic", "label"):
+        raise ValueError("Unsupported atlas type")
+    # FSL probabilistic summary/maxprob images encode XML index + 1.
+    # For a true Label atlas, the XML index is the label value itself.
+    offset = 0 if atlas_type == "label" else 1
     mapping = {}
     excluded = []
     for label in root.findall("./data/label"):
-        code = int(label.attrib["index"]) + 1
+        code = int(label.attrib["index"]) + offset
         text = " ".join((label.text or "").lower().split())
         matches = [lobe for lobe, words in REGIONS.items() if any(word in text for word in words)]
-        if len(matches) == 1:
+        if code <= 0:
+            excluded.append({"label": code, "name": label.text, "reason": "background label"})
+        elif len(matches) == 1:
             # Hemisphere intentionally unknown; standard cortical summary
             # labels are not left/right separated.
             mapping[str(code)] = {"lobe": matches[0], "hemisphere": "Unknown"}
         else:
             excluded.append({"label": code, "name": label.text, "reason": "ambiguous or not mapped"})
-    return {"atlas": name, "source_xml": str(xml_path),
+    return {"atlas": name, "atlas_type": atlas_type or "assumed_probabilistic_summary",
+            "label_value_offset": offset, "source_xml": str(xml_path),
             "mapping": mapping, "excluded": excluded,
             "warning": "This atlas is not lateralized. Hemisphere cannot be derived from these labels."}
 
