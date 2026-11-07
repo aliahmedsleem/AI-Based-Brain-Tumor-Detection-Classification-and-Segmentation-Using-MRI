@@ -11,6 +11,9 @@ type StudyMetadata = {
   shape: number[]
   voxel_spacing_mm: number[]
   analysis_available: false
+  orientation: string
+  previews: Record<'sagittal' | 'coronal' | 'axial', string>
+  slice_indices: Record<'sagittal' | 'coronal' | 'axial', number>
 }
 
 const items = [
@@ -103,7 +106,13 @@ function App() {
           {result && <div className="result"><h3>Image metadata</h3>
             <p>Dimensions: {result.shape.join(' × ')}</p>
             <p>Voxel spacing: {result.voxel_spacing_mm.map(v => v.toFixed(2)).join(' × ')} mm</p>
+            <p>Orientation: {result.orientation} (canonical)</p>
             <p>AI analysis: Not available in this phase</p>
+            <div className="mri-grid">{(['axial','coronal','sagittal'] as const).map(plane =>
+              <figure key={plane} className="mri-plane"><figcaption>{plane.toUpperCase()} · slice {result.slice_indices[plane] + 1}</figcaption>
+                <img src={result.previews[plane]} alt={`${plane} MRI middle slice preview`} /></figure>
+            )}</div>
+            <p className="preview-note">Mid-slice previews only. No tumor segmentation or diagnostic inference.</p>
           </div>}
         </section> :
         <section className="panel empty"><h2>{page}</h2>
