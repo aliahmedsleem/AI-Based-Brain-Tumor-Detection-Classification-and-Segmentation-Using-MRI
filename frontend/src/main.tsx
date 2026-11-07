@@ -61,6 +61,8 @@ function App() {
   const [studyNote, setStudyNote] = useState('')
   const [volumeIndex, setVolumeIndex] = useState(0)
   const [sessionMessage, setSessionMessage] = useState('')
+  const [preprocessSummary, setPreprocessSummary] = useState<{nonzero_voxels:number; normalized_mean:number; normalized_std:number; clipping_percentiles:number[]} | null>(null)
+  const [preprocessBusy, setPreprocessBusy] = useState(false)
   const [views, setViews] = useState<Record<Plane, View>>({ sagittal: defaultView(), coronal: defaultView(), axial: defaultView() })
   const drag = useRef<{ plane: Plane; x: number; y: number } | null>(null)
   function updateView(plane: Plane, patch: Partial<View>) {
@@ -80,6 +82,7 @@ function App() {
       const response = await fetch(`/api/studies/inspect?volume_index=${volumeIndex}`, { method: 'POST', body: data })
       const body = await parseApiResponse(response, 'MRI inspection failed')
       setResult(body as StudyMetadata)
+      setPreprocessSummary(null)
       setStudyLabel(file.name)
       setStudyNote('')
       setSessionMessage('')
@@ -112,6 +115,21 @@ function App() {
     }
   }
 
+  async function runPreprocessing() {
+    if (!result) return
+    setPreprocessBusy(true)
+    setError('')
+    try {
+      const response = await fetch(`/api/studies/${encodeURIComponent(result.study_id)}/preprocess/summary`, { method: 'POST' })
+      const body = await parseApiResponse(response, 'Preprocessing failed')
+      setPreprocessSummary(body)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Preprocessing failed')
+    } finally {
+      setPreprocessBusy(false)
+    }
+  }
+
   async function releaseStudy() {
     if (!result) return
     const studyId = result.study_id
@@ -120,6 +138,7 @@ function App() {
       await parseApiResponse(response, 'Unable to release study')
       Object.values(sliceRequests.current).forEach(controller => controller?.abort())
       setResult(null)
+      setPreprocessSummary(null)
       setFile(null)
       setStudyLabel('')
       setStudyNote('')
@@ -217,6 +236,19 @@ function App() {
             <p>Voxel spacing: {result.voxel_spacing_mm.map(v => v.toFixed(2)).join(' × ')} mm</p>
             <p>Orientation: {result.orientation} (canonical)</p>
             <p>AI analysis: Not available in this phase</p>
+            <div className="preprocess-panel">
+              <h3>Research preprocessing</h3>
+              <p>Inspect intensity normalization statistics. This does not detect, classify or segment tumors.</p>
+              <button className="secondary" disabled={preprocessBusy} onClick={runPreprocessing}>
+                {preprocessBusy ? 'Processing…' : 'Run Preprocessing Check'}
+              </button>
+              {preprocessSummary && <div className="preprocess-stats">
+                <p>Nonzero voxels: {preprocessSummary.nonzero_voxels.toLocaleString()}</p>
+                <p>Normalized mean: {preprocessSummary.normalized_mean.toFixed(4)}</p>
+                <p>Normalized standard deviation: {preprocessSummary.normalized_std.toFixed(4)}</p>
+                <p>Clipping percentiles: {preprocessSummary.clipping_percentiles.join(' – ')}</p>
+              </div>}
+            </div>
             <div className="mri-grid">{(['axial','coronal','sagittal'] as const).map(plane =>
               <figure key={plane} className="mri-plane"><figcaption>{plane.toUpperCase()} · slice {result.slice_indices[plane] + 1}</figcaption>
                 <div className="mri-viewport"
@@ -260,7 +292,7 @@ function App() {
           <p>This module is planned for the next development phase. No patient records or AI outputs are fabricated.</p>
           <button className="secondary" onClick={() => setPage('MRI Analysis')}>Go to MRI Analysis</button>
         </section>}
-      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.7</footer>
+      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.8</footer>
     </main>
   </div>
 }
