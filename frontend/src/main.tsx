@@ -7,6 +7,7 @@ import {
 import './style.css'
 
 type StudyMetadata = {
+  study_id: string
   filename: string
   shape: number[]
   voxel_spacing_mm: number[]
@@ -50,7 +51,7 @@ function App() {
   const [file, setFile] = useState<File | null>(null)
   const [result, setResult] = useState<StudyMetadata | null>(null)
   const [busy, setBusy] = useState(false)
-  const [sliceBusy, setSliceBusy] = useState(false)
+  const sliceRequests = useRef<Partial<Record<Plane, AbortController>>>({})
   const [error, setError] = useState('')
   const [views, setViews] = useState<Record<Plane, View>>({ sagittal: defaultView(), coronal: defaultView(), axial: defaultView() })
   const drag = useRef<{ plane: Plane; x: number; y: number } | null>(null)
@@ -60,6 +61,7 @@ function App() {
 
   async function inspect() {
     if (!file) return
+    Object.values(sliceRequests.current).forEach(controller => controller?.abort())
     setBusy(true)
     setError('')
     setResult(null)
@@ -77,22 +79,25 @@ function App() {
     }
   }
 
-  async function changeSlice(plane: 'sagittal' | 'coronal' | 'axial', index: number) {
-    if (!file || !result || sliceBusy) return
-    setSliceBusy(true)
+  async function changeSlice(plane: Plane, index: number) {
+    if (!result) return
+    const studyId = result.study_id
+    sliceRequests.current[plane]?.abort()
+    const controller = new AbortController()
+    sliceRequests.current[plane] = controller
     setError('')
-    const next = { ...result.slice_indices, [plane]: index }
-    const data = new FormData()
-    data.append('file', file)
+    setResult(previous => previous ? { ...previous, slice_indices: { ...previous.slice_indices, [plane]: index } } : null)
     try {
-      const params = new URLSearchParams(Object.entries(next).map(([key, value]) => [key, String(value)]))
-      const response = await fetch('/api/studies/slices?' + params.toString(), { method: 'POST', body: data })
+      const url = `/api/studies/${encodeURIComponent(studyId)}/slice/${plane}?index=${index}`
+      const response = await fetch(url, { signal: controller.signal })
       const body = await parseApiResponse(response, 'Unable to render MRI slice')
-      setResult(previous => previous ? { ...previous, previews: body.previews, slice_indices: body.slice_indices } : null)
+      if (controller.signal.aborted) return
+      setResult(previous => previous?.study_id === studyId
+        ? { ...previous, previews: { ...previous.previews, [plane]: body.preview } }
+        : previous)
     } catch (err) {
+      if (controller.signal.aborted) return
       setError(err instanceof Error ? err.message : 'Slice rendering failed')
-    } finally {
-      setSliceBusy(false)
     }
   }
 
@@ -143,7 +148,7 @@ function App() {
             <strong>{file ? file.name : 'Choose a brain MRI volume'}</strong>
             <span>Supported: .nii, .nii.gz · Up to 256 MiB</span>
             <input type="file" accept=".nii,.gz"
-              onChange={e => { setFile(e.target.files?.[0] || null); setResult(null); setError('') }} />
+              onChange={e => { Object.values(sliceRequests.current).forEach(controller => controller?.abort()); setFile(e.target.files?.[0] || null); setResult(null); setError('') }} />
           </label>
           <button className="primary" disabled={!file || busy} onClick={inspect}>
             {busy ? 'Inspecting…' : 'Inspect MRI Metadata'}
@@ -186,18 +191,18 @@ function App() {
                 </div>
                 <label className="slice-control"><span>Slice {result.slice_indices[plane] + 1} / {result.shape[plane === 'sagittal' ? 0 : plane === 'coronal' ? 1 : 2]}</span>
                   <input type="range" min={0} max={result.shape[plane === 'sagittal' ? 0 : plane === 'coronal' ? 1 : 2] - 1}
-                    value={result.slice_indices[plane]} disabled={sliceBusy}
+                    value={result.slice_indices[plane]} disabled={busy}
                     onChange={e => changeSlice(plane, Number(e.target.value))} aria-label={`${plane} slice`} /></label>
               </figure>
             )}</div>
-            <p className="preview-note">Interactive slice navigation, zoom, drag-to-pan, brightness and contrast. Slice changes still upload the volume; large files may respond slowly. No tumor segmentation or diagnostic inference.</p>
+            <p className="preview-note">Interactive slice navigation, zoom, drag-to-pan, brightness and contrast. Slices are rendered from a temporary in-memory session without re-uploading the volume. Sessions expire after 10 minutes of inactivity. No tumor segmentation or diagnostic inference.</p>
           </div>}
         </section> :
         <section className="panel empty"><h2>{page}</h2>
           <p>This module is planned for the next development phase. No patient records or AI outputs are fabricated.</p>
           <button className="secondary" onClick={() => setPage('MRI Analysis')}>Go to MRI Analysis</button>
         </section>}
-      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.4</footer>
+      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.5</footer>
     </main>
   </div>
 }
