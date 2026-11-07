@@ -29,6 +29,7 @@ function App() {
   const [file, setFile] = useState<File | null>(null)
   const [result, setResult] = useState<StudyMetadata | null>(null)
   const [busy, setBusy] = useState(false)
+  const [sliceBusy, setSliceBusy] = useState(false)
   const [error, setError] = useState('')
 
   async function inspect() {
@@ -47,6 +48,26 @@ function App() {
       setError(err instanceof Error ? err.message : 'Unexpected error')
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function changeSlice(plane: 'sagittal' | 'coronal' | 'axial', index: number) {
+    if (!file || !result || sliceBusy) return
+    setSliceBusy(true)
+    setError('')
+    const next = { ...result.slice_indices, [plane]: index }
+    const data = new FormData()
+    data.append('file', file)
+    try {
+      const params = new URLSearchParams(Object.entries(next).map(([key, value]) => [key, String(value)]))
+      const response = await fetch('/api/studies/slices?' + params.toString(), { method: 'POST', body: data })
+      const body = await response.json()
+      if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Unable to render slice')
+      setResult(previous => previous ? { ...previous, previews: body.previews, slice_indices: body.slice_indices } : null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Slice rendering failed')
+    } finally {
+      setSliceBusy(false)
     }
   }
 
@@ -110,16 +131,21 @@ function App() {
             <p>AI analysis: Not available in this phase</p>
             <div className="mri-grid">{(['axial','coronal','sagittal'] as const).map(plane =>
               <figure key={plane} className="mri-plane"><figcaption>{plane.toUpperCase()} · slice {result.slice_indices[plane] + 1}</figcaption>
-                <img src={result.previews[plane]} alt={`${plane} MRI middle slice preview`} /></figure>
+                <img src={result.previews[plane]} alt={`${plane} MRI slice preview`} />
+                <label className="slice-control"><span>Slice {result.slice_indices[plane] + 1} / {result.shape[plane === 'sagittal' ? 0 : plane === 'coronal' ? 1 : 2]}</span>
+                  <input type="range" min={0} max={result.shape[plane === 'sagittal' ? 0 : plane === 'coronal' ? 1 : 2] - 1}
+                    value={result.slice_indices[plane]} disabled={sliceBusy}
+                    onChange={e => changeSlice(plane, Number(e.target.value))} aria-label={`${plane} slice`} /></label>
+              </figure>
             )}</div>
-            <p className="preview-note">Mid-slice previews only. No tumor segmentation or diagnostic inference.</p>
+            <p className="preview-note">Interactive slice navigation. Each change uploads the volume for stateless rendering; large files may respond slowly. No tumor segmentation or diagnostic inference.</p>
           </div>}
         </section> :
         <section className="panel empty"><h2>{page}</h2>
           <p>This module is planned for the next development phase. No patient records or AI outputs are fabricated.</p>
           <button className="secondary" onClick={() => setPage('MRI Analysis')}>Go to MRI Analysis</button>
         </section>}
-      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.1</footer>
+      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.3</footer>
     </main>
   </div>
 }
