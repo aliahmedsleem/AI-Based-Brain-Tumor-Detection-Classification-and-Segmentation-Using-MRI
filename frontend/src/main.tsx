@@ -362,7 +362,7 @@ function App() {
             </label>
             <label><input type="checkbox" checked={atlasReviewed} onChange={e => setAtlasReviewed(e.target.checked)} /> I confirm the atlas-to-MRI registration was visually reviewed and its label definitions are verified.</label>
             <button className="secondary" disabled={!atlasFile || !atlasReviewed || !atlasMapping.trim() || atlasBusy} onClick={localizeAtlas}>{atlasBusy ? 'Computing overlap…' : 'Calculate Atlas Overlap'}</button>
-            {atlasResult && <p role="status">Atlas coverage: {(atlasResult.coverage_fraction * 100).toFixed(1)}%. {atlasResult.regions.map((region:any) => `${region.hemisphere} ${region.lobe}: ${(region.fraction_of_predicted_mask * 100).toFixed(1)}%`).join(' · ') || 'No mapped regions above reporting cutoff'}. Requires specialist confirmation.</p>}
+            {atlasResult && <p role="status">Atlas coverage: {(atlasResult.coverage_fraction * 100).toFixed(1)}%. {atlasResult.lobes.map((region:any) => `${region.hemisphere} ${region.lobe}: ${(region.fraction_of_predicted_mask * 100).toFixed(1)}%`).join(' · ') || 'No mapped regions above reporting cutoff'}. Requires specialist confirmation.</p>}
           </div>
           {reportError && <p className="error" role="alert">{reportError}</p>}
           {reportData && <article className="report-document">
@@ -396,7 +396,9 @@ function App() {
             <h4>Atlas-Estimated Anatomical Location</h4>
             {reportData.anatomical_localization ? <>
               <p><b>Atlas coverage:</b> {(reportData.anatomical_localization.coverage_fraction * 100).toFixed(1)}% of predicted mask. Registration QA: user-attested, not independently verified.</p>
-              <ul>{reportData.anatomical_localization.regions.map((region:any) =>
+              <p><b>Estimated dominant lobe:</b> {reportData.anatomical_localization.dominant_lobe ? `${reportData.anatomical_localization.dominant_lobe.hemisphere} ${reportData.anatomical_localization.dominant_lobe.lobe} (${(reportData.anatomical_localization.dominant_lobe_fraction * 100).toFixed(1)}% of predicted mask)` : "Not determined — insufficient atlas coverage or no dominant mapped lobe"}</p>
+              <p><b>Unmapped region:</b> {(reportData.anatomical_localization.unmapped_fraction * 100).toFixed(1)}% of predicted mask.</p>
+              <ul>{reportData.anatomical_localization.lobes.map((region:any) =>
                 <li key={region.label}>{region.hemisphere} {region.lobe}: {(region.fraction_of_predicted_mask * 100).toFixed(1)}% of predicted mask</li>
               )}</ul>
               <p className="report-footnote">Atlas-based estimates depend on registration and atlas definitions; not independently verified or clinically validated.</p>
@@ -569,7 +571,7 @@ function App() {
           <p>This module is planned for the next development phase. No patient records or AI outputs are fabricated.</p>
           <button className="secondary" onClick={() => setPage('MRI Analysis')}>Go to MRI Analysis</button>
         </section>}
-      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.15</footer>
+      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.17</footer>
     </main>
   </div>
 }
