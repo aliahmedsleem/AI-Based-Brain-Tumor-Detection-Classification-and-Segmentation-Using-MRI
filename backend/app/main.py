@@ -110,7 +110,7 @@ async def inspect_study(file: UploadFile = File(...), volume_index: int = Query(
             with _cache_lock:
                 _cache.clear()  # Single-study research workstation; bounded memory.
                 _cache[study_id] = {"volume": volume, "lower": lower, "upper": upper,
-                                    "last_access": time.monotonic(), "mask": None, "spacing": list(map(float, image.header.get_zooms()[:3]))}
+                                    "last_access": time.monotonic(), "mask": None, "spacing": list(map(float, __import__("numpy").linalg.norm(image.affine[:3, :3], axis=0)))}
             return {
                 "study_id": study_id,
                 "filename": file.filename,
@@ -131,7 +131,7 @@ async def inspect_study(file: UploadFile = File(...), volume_index: int = Query(
 
 
 @app.get("/api/studies/{study_id}/slice/{plane}")
-def get_cached_slice(study_id: str, plane: str, index: int = Query(ge=0)):
+def get_cached_slice(study_id: str, plane: str, index: int = Query(ge=0), overlay: bool = Query(default=True)):
     axes = {"sagittal": 0, "coronal": 1, "axial": 2}
     if plane not in axes:
         raise HTTPException(status_code=400, detail="Unknown MRI plane")
@@ -140,8 +140,8 @@ def get_cached_slice(study_id: str, plane: str, index: int = Query(ge=0)):
     if index >= item["volume"].shape[axis]:
         raise HTTPException(status_code=422, detail="Slice index out of range")
     from app.inference import overlay_png
-    render = overlay_png(item["volume"], item["mask"], axis, index, item["lower"], item["upper"]) if item.get("mask") is not None else preview_image(item["volume"], axis, index, item["lower"], item["upper"])
-    return {"plane": plane, "index": index, "preview": render, "segmentation_overlay": item.get("mask") is not None}
+    render = overlay_png(item["volume"], item["mask"], axis, index, item["lower"], item["upper"]) if overlay and item.get("mask") is not None else preview_image(item["volume"], axis, index, item["lower"], item["upper"])
+    return {"plane": plane, "index": index, "preview": render, "segmentation_overlay": overlay and item.get("mask") is not None}
 
 
 @app.delete("/api/studies/{study_id}")
@@ -211,3 +211,30 @@ def segment_study(study_id: str, modality: str = Query(default="flair")):
             "segmented_voxels": int(mask.sum()), "estimated_mask_volume_ml": round(volume_mm3 / 1000, 3),
             "previews": previews, "slice_indices": indices,
             "research_only": True, "notice": "Experimental segmentation, not a diagnosis. Only use FLAIR MRI."}
+
+
+@app.get("/api/studies/{study_id}/ai/report")
+def segmentation_report(study_id: str):
+    """Non-identifying research report for the active session; no diagnosis."""
+    import numpy as np
+    item = _get_session(study_id)
+    mask = item.get("mask")
+    if mask is None:
+        raise HTTPException(status_code=409, detail="Run research segmentation before requesting a report")
+    voxel_volume = float(np.prod(item["spacing"]))
+    return {
+        "schema_version": "1.0", "study_id": study_id,
+        "task": "binary_whole_tumor", "modality": "FLAIR",
+        "threshold": 0.90, "postprocessing": "largest_3d_component",
+        "image_shape": list(item["volume"].shape),
+        "voxel_spacing_mm": list(item["spacing"]),
+        "segmented_voxels": int(np.count_nonzero(mask)),
+        "estimated_mask_volume_ml": round(float(np.count_nonzero(mask)) * voxel_volume / 1000, 3),
+        "research_only": True,
+        "limitations": [
+            "Experimental research segmentation; not a medical diagnosis.",
+            "Mask volume is not a clinical measurement.",
+            "Model trained for FLAIR MRI and binary whole-tumor segmentation only.",
+            "Held-out test evaluation used eight cases from the BraTS2021 dataset.",
+        ],
+    }
