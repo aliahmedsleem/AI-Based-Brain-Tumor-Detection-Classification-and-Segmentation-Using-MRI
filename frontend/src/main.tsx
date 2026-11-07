@@ -10,6 +10,10 @@ type StudyMetadata = {
   study_id: string
   filename: string
   shape: number[]
+  original_shape: number[]
+  volume_count: number
+  selected_volume: number
+  notice: string | null
   voxel_spacing_mm: number[]
   analysis_available: false
   orientation: string
@@ -55,6 +59,7 @@ function App() {
   const [error, setError] = useState('')
   const [studyLabel, setStudyLabel] = useState('')
   const [studyNote, setStudyNote] = useState('')
+  const [volumeIndex, setVolumeIndex] = useState(0)
   const [sessionMessage, setSessionMessage] = useState('')
   const [views, setViews] = useState<Record<Plane, View>>({ sagittal: defaultView(), coronal: defaultView(), axial: defaultView() })
   const drag = useRef<{ plane: Plane; x: number; y: number } | null>(null)
@@ -72,7 +77,7 @@ function App() {
     const data = new FormData()
     data.append('file', file)
     try {
-      const response = await fetch('/api/studies/inspect', { method: 'POST', body: data })
+      const response = await fetch(`/api/studies/inspect?volume_index=${volumeIndex}`, { method: 'POST', body: data })
       const body = await parseApiResponse(response, 'MRI inspection failed')
       setResult(body as StudyMetadata)
       setStudyLabel(file.name)
@@ -194,13 +199,20 @@ function App() {
             <strong>{file ? file.name : 'Choose a brain MRI volume'}</strong>
             <span>Supported: .nii, .nii.gz · Up to 256 MiB</span>
             <input type="file" accept=".nii,.gz"
-              onChange={e => { Object.values(sliceRequests.current).forEach(controller => controller?.abort()); setFile(e.target.files?.[0] || null); setResult(null); setError('') }} />
+              onChange={e => { Object.values(sliceRequests.current).forEach(controller => controller?.abort()); setFile(e.target.files?.[0] || null); setResult(null); setVolumeIndex(0); setError('') }} />
+          </label>
+          <label className="volume-selector">4D volume index (0-based; use 0 for ordinary 3D MRI)
+            <input type="number" min={0} max={999} step={1} value={volumeIndex} disabled={busy}
+              onChange={e => setVolumeIndex(Math.max(0, Math.floor(Number(e.target.value) || 0)))} />
           </label>
           <button className="primary" disabled={!file || busy} onClick={inspect}>
             {busy ? 'Inspecting…' : 'Inspect MRI Metadata'}
           </button>
           {error && <div role="alert" className="error">{error}</div>}
           {result && <div className="result"><h3>Image metadata</h3>
+            {result.notice && <p role="status" className="volume-notice">{result.notice}</p>}
+            <p>Source dimensions: {result.original_shape.join(' × ')}</p>
+            <p>Selected volume: {result.selected_volume + 1} of {result.volume_count}</p>
             <p>Dimensions: {result.shape.join(' × ')}</p>
             <p>Voxel spacing: {result.voxel_spacing_mm.map(v => v.toFixed(2)).join(' × ')} mm</p>
             <p>Orientation: {result.orientation} (canonical)</p>
@@ -248,7 +260,7 @@ function App() {
           <p>This module is planned for the next development phase. No patient records or AI outputs are fabricated.</p>
           <button className="secondary" onClick={() => setPage('MRI Analysis')}>Go to MRI Analysis</button>
         </section>}
-      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.6</footer>
+      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.7</footer>
     </main>
   </div>
 }
