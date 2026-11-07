@@ -23,6 +23,20 @@ class HarvardOxfordMappingTests(unittest.TestCase):
         self.assertNotIn("3", report["mapping"])
         self.assertEqual(len(report["excluded"]), 1)
 
+    def test_label_atlas_uses_xml_values_without_offset(self):
+        xml = """<atlas><header><name>Harvard-Oxford Cortical Structural Atlas</name>
+        <type>Label</type></header><data>
+        <label index="0">Background</label>
+        <label index="7">Frontal Pole</label>
+        </data></atlas>"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "label.xml"
+            path.write_text(xml, encoding="utf-8")
+            report = generate_mapping(path)
+        self.assertEqual(report["mapping"]["7"]["lobe"], "frontal")
+        self.assertNotIn("8", report["mapping"])
+        self.assertNotIn("0", report["mapping"])
+
     def test_reject_wrong_atlas(self):
         xml = "<atlas><header><name>Other Atlas</name></header><data /></atlas>"
         with tempfile.TemporaryDirectory() as directory:
