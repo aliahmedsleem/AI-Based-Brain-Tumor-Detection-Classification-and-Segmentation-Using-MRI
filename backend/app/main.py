@@ -54,12 +54,13 @@ async def inspect_study(file: UploadFile = File(...)):
                     raise HTTPException(status_code=413, detail="File exceeds 256 MiB")
                 output.write(chunk)
         try:
-            image = nib.as_closest_canonical(nib.load(str(path)))
+            image = nib.as_closest_canonical(nib.load(str(path), mmap=False, keep_file_open=False))
             if len(image.shape) != 3:
                 raise ValueError("Only 3D MRI volumes supported")
             if np.prod(image.shape) > 100_000_000:
                 raise ValueError("Volume exceeds safe preview size")
-            volume = image.get_fdata(dtype=np.float32)
+            volume = image.get_fdata(dtype=np.float32, caching='unchanged')
+            image.uncache()
             finite = volume[np.isfinite(volume)]
             if finite.size == 0:
                 raise ValueError("No finite intensities")
@@ -109,10 +110,11 @@ async def get_study_slices(
                     raise HTTPException(status_code=413, detail="File exceeds 256 MiB")
                 output.write(chunk)
         try:
-            image = nib.as_closest_canonical(nib.load(str(path)))
+            image = nib.as_closest_canonical(nib.load(str(path), mmap=False, keep_file_open=False))
             if len(image.shape) != 3 or np.prod(image.shape) > 100_000_000:
                 raise ValueError("Unsupported image shape")
-            volume = image.get_fdata(dtype=np.float32)
+            volume = image.get_fdata(dtype=np.float32, caching='unchanged')
+            image.uncache()
             finite = volume[np.isfinite(volume)]
             if finite.size == 0:
                 raise ValueError("No finite intensities")
