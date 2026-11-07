@@ -10,7 +10,7 @@ from fastapi import Query
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="NeuroScope AI Research API", version="0.7.0")
+app = FastAPI(title="NeuroScope AI Research API", version="0.8.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -155,3 +155,30 @@ def study_session_status(study_id: str):
     return {"study_id": study_id, "shape": list(item["volume"].shape),
             "expires_after_inactive_seconds": CACHE_TTL_SECONDS,
             "analysis_available": False}
+
+
+@app.get("/api/ai/readiness")
+def ai_readiness():
+    from app.research_pipeline import model_readiness
+    return model_readiness()
+
+
+@app.post("/api/studies/{study_id}/preprocess/summary")
+def preprocessing_summary(study_id: str):
+    """Research-only intensity statistics; never returns tumor predictions."""
+    from app.research_pipeline import preprocess_mri
+    item = _get_session(study_id)
+    try:
+        _, summary = preprocess_mri(item["volume"])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "study_id": study_id,
+        "shape": list(summary.shape),
+        "nonzero_voxels": summary.nonzero_voxels,
+        "normalized_mean": round(summary.normalized_mean, 6),
+        "normalized_std": round(summary.normalized_std, 6),
+        "clipping_percentiles": list(summary.clipping_percentiles),
+        "research_only": True,
+        "model_loaded": False,
+    }
