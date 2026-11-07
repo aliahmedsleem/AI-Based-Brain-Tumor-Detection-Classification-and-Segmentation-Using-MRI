@@ -53,6 +53,9 @@ function App() {
   const [busy, setBusy] = useState(false)
   const sliceRequests = useRef<Partial<Record<Plane, AbortController>>>({})
   const [error, setError] = useState('')
+  const [studyLabel, setStudyLabel] = useState('')
+  const [studyNote, setStudyNote] = useState('')
+  const [sessionMessage, setSessionMessage] = useState('')
   const [views, setViews] = useState<Record<Plane, View>>({ sagittal: defaultView(), coronal: defaultView(), axial: defaultView() })
   const drag = useRef<{ plane: Plane; x: number; y: number } | null>(null)
   function updateView(plane: Plane, patch: Partial<View>) {
@@ -72,6 +75,9 @@ function App() {
       const response = await fetch('/api/studies/inspect', { method: 'POST', body: data })
       const body = await parseApiResponse(response, 'MRI inspection failed')
       setResult(body as StudyMetadata)
+      setStudyLabel(file.name)
+      setStudyNote('')
+      setSessionMessage('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unexpected error')
     } finally {
@@ -101,6 +107,23 @@ function App() {
     }
   }
 
+  async function releaseStudy() {
+    if (!result) return
+    const studyId = result.study_id
+    try {
+      const response = await fetch(`/api/studies/${encodeURIComponent(studyId)}`, { method: 'DELETE' })
+      await parseApiResponse(response, 'Unable to release study')
+      Object.values(sliceRequests.current).forEach(controller => controller?.abort())
+      setResult(null)
+      setFile(null)
+      setStudyLabel('')
+      setStudyNote('')
+      setSessionMessage('Study released from server memory.')
+    } catch (err) {
+      setSessionMessage(err instanceof Error ? err.message : 'Unable to release study')
+    }
+  }
+
   return <div className="shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-icon"><Brain size={23} /></div>
@@ -119,7 +142,30 @@ function App() {
           <h1>{page}</h1><p>AI-assisted brain MRI research platform</p></div>
         <div className="avatar" aria-label="Research user">R</div>
       </header>
-      {page === 'Dashboard' ? <>
+      {page === 'Studies' ? <section className="panel">
+        <div className="panel-heading"><div><h2>Active MRI Study</h2>
+          <p>Manage the current temporary research session. No patient registry or permanent storage is enabled.</p></div>
+          <span className="tag">Session only</span></div>
+        {result ? <div className="study-manager">
+          <div className="study-fields">
+            <label>Study label<input maxLength={100} value={studyLabel} onChange={e => setStudyLabel(e.target.value)} placeholder="Research study label" /></label>
+            <label>Research notes (local to this page)<textarea maxLength={1000} rows={4} value={studyNote} onChange={e => setStudyNote(e.target.value)} placeholder="Optional notes; avoid patient identifiers" /></label>
+          </div>
+          <div className="study-summary">
+            <p><b>Original file:</b> {result.filename}</p>
+            <p><b>Volume:</b> {result.shape.join(' × ')} voxels</p>
+            <p><b>Orientation:</b> {result.orientation}</p>
+            <p><b>AI analysis:</b> Not available</p>
+            <p><b>Retention:</b> Temporary in-memory session, expires after 10 minutes idle; one active study per server.</p>
+          </div>
+          <div className="study-actions">
+            <button className="primary" onClick={() => setPage('MRI Analysis')}>Open MRI Viewer</button>
+            <button className="danger-button" onClick={releaseStudy}>Release Study</button>
+          </div>
+        </div> : <div className="study-empty"><Database size={34} /><p>No active study. Inspect a NIfTI volume to start a temporary session.</p>
+          <button className="primary" onClick={() => setPage('MRI Analysis')}>Upload MRI</button></div>}
+        {sessionMessage && <p role="status">{sessionMessage}</p>}
+      </section> : page === 'Dashboard' ? <>
         <section className="notice"><AlertCircle size={21} /><div><b>Development environment</b>
           <div>AI inference is not connected yet. No diagnostic results are generated.</div></div></section>
         <div className="metrics">
@@ -202,7 +248,7 @@ function App() {
           <p>This module is planned for the next development phase. No patient records or AI outputs are fabricated.</p>
           <button className="secondary" onClick={() => setPage('MRI Analysis')}>Go to MRI Analysis</button>
         </section>}
-      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.5</footer>
+      <footer>NeuroScope AI · Graduation Research Project · Prototype v0.6</footer>
     </main>
   </div>
 }
